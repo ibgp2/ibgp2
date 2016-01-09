@@ -1,0 +1,182 @@
+## -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
+
+import os
+import Options
+import os.path
+import ns3waf
+import sys
+# local modules
+
+
+def options(opt):
+    opt.tool_options('compiler_cc')
+    ns3waf.options(opt)
+
+def configure(conf):
+    ns3waf.check_modules(conf, ['core', 'network', 'internet'], mandatory = True)
+    ns3waf.check_modules(conf, ['point-to-point', 'tap-bridge', 'netanim'], mandatory = False)
+    ns3waf.check_modules(conf, ['wifi', 'point-to-point', 'csma', 'mobility'], mandatory = False)
+    ns3waf.check_modules(conf, ['point-to-point-layout'], mandatory = False)
+    ns3waf.check_modules(conf, ['topology-read', 'applications', 'visualizer'], mandatory = False)
+    conf.check_tool('compiler_cc')
+
+    conf.env.append_value('CXXFLAGS', '-I/usr/include/python2.6')
+    conf.env.append_value('LINKFLAGS', '-pthread')
+    conf.check (lib='dl', mandatory = True)
+
+    conf.env['ENABLE_PYTHON_BINDINGS'] = True
+    conf.env['NS3_ENABLED_MODULES'] = []
+    ns3waf.print_feature_summary(conf)
+
+
+
+def build_dce_tests(module, bld):
+    module.add_runner_test(needed=['core', 'dce-quagga', 'internet', 'csma'],
+                           source=['test/dce-quagga-test.cc'])
+
+def build_dce_examples(module):
+    dce_examples = [
+                   ]
+    for name,lib in dce_examples:
+        module.add_example(**dce_kw(target = 'bin/' + name,
+                                    source = ['example/' + name + '.cc'],
+                                    lib = lib))
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point', 'point-to-point-layout'],
+                       target='bin/dce-zebra-simple',
+                       source=['example/dce-zebra-simple.cc'])
+
+# mando: added <<
+    module.add_example(
+        needed = ["core", "internet", "dce-quagga", "point-to-point", "applications"],
+        target = "bin/dce-ibgpv2-simu",
+        source = ["example/dce-ibgpv2-simu.cc"]
+    )
+# mando: added >>
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point', 'applications', 'topology-read'],
+                       target='bin/dce-quagga-ospfd-rocketfuel',
+                       source=['example/dce-quagga-ospfd-rocketfuel.cc'])
+
+def build_dce_kernel_examples(module):
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point'],
+                       target='bin/dce-quagga-radvd',
+                       source=['example/dce-quagga-radvd.cc'])
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point'],
+                       target='bin/dce-quagga-ripd',
+                       source=['example/dce-quagga-ripd.cc'])
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point'],
+                       target='bin/dce-quagga-ripngd',
+                       source=['example/dce-quagga-ripngd.cc'])
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point'],
+                       target='bin/dce-quagga-ospfd',
+                       source=['example/dce-quagga-ospfd.cc'])
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point'],
+                       target='bin/dce-quagga-ospf6d',
+                       source=['example/dce-quagga-ospf6d.cc'])
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point', 'topology-read'],
+                       target='bin/dce-quagga-bgpd-caida',
+                       source=['example/dce-quagga-bgpd-caida.cc'])
+
+    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point'],
+                       target='bin/dce-quagga-bgpd',
+                       source=['example/dce-quagga-bgpd.cc'])
+
+#    module.add_example(needed = ['core', 'internet', 'dce-quagga', 'point-to-point'],
+#                       target='bin/dce-quagga-simple-network',
+#                       source=['example/dce-quagga-simple-network.cc'])
+
+def build(bld):
+
+    module_source = [
+# MANDO << Added
+        'model/ibgp2d/ibgp2d.cc',
+        'model/ipv4-prefix.cc',
+        'model/pcap-wrapper.cc',
+        'model/tcp-client.cc',
+        'model/tcpdump-wrapper.cc',
+        'model/telnet-wrapper.cc',
+        'model/ospf-graph/ospf-graph.cc',
+        'model/ospf-graph/ospf-packet.cc',
+        'model/quagga/common/access-list.cc',
+        'model/quagga/common/prefix-list.cc',
+        'model/quagga/common/quagga-base-config.cc',
+        'model/quagga/common/quagga-distribute-list.cc',
+        'model/quagga/common/quagga-direction.cc',
+        'model/quagga/common/quagga-fs.cc',
+        'model/quagga/common/quagga-utils.cc',
+        'model/quagga/bgpd/bgp-config.cc',
+        'model/quagga/bgpd/bgp-neighbor.cc',
+        'model/quagga/ospf6d/ospf6-config.cc',
+        'model/quagga/ospfd/ospf-config.cc',
+        'model/quagga/ospfd/ospf-distribute-list.cc',
+        'model/quagga/ospfd/ospf-interface.cc',
+        'model/quagga/ospfd/ospf-redistribute.cc',
+        'model/quagga/ripd/rip-config.cc',
+        'model/quagga/ripngd/ripng-config.cc',
+        'model/quagga/zebra/zebra-config.cc',
+        'model/quagga/zebra/zebra-interface.cc',
+        'helper/ibgp2d-helper.cc',
+        'helper/ospf-graph-helper.cc',
+        'helper/quagga-vty-helper.cc',
+        'helper/tcp-client-helper.cc',
+# MANDO >> Added
+        'helper/quagga-helper.cc',
+    ]
+
+    module_headers = [
+# MANDO << Added
+        'model/ibgp2d/ibgp2d.h',
+        'model/ipv4-prefix.h',
+        'model/pcap-wrapper.h',
+        'model/tcp-client.h',
+        'model/tcpdump-wrapper.h',
+        'model/telnet-wrapper.h',
+        'model/ospf-graph/ospf-graph.h',
+        'model/ospf-graph/ospf-packet.h',
+        'model/quagga/common/access-list.h',
+        'model/quagga/common/prefix-list.h',
+        'model/quagga/common/quagga-base-config.h',
+        'model/quagga/common/quagga-distribute-list.h',
+        'model/quagga/common/quagga-direction.h',
+        'model/quagga/common/quagga-fs.h',
+        'model/quagga/common/quagga-redistribute.h',
+        'model/quagga/common/quagga-utils.h',
+        'model/quagga/bgpd/bgp-config.h',
+        'model/quagga/bgpd/bgp-neighbor.h',
+        'model/quagga/ospf6d/ospf6-config.h',
+        'model/quagga/ospfd/ospf-config.h',
+        'model/quagga/ospfd/ospf-distribute-list.h',
+        'model/quagga/ospfd/ospf-interface.h',
+        'model/quagga/ospfd/ospf-redistribute.h',
+        'model/quagga/ripd/rip-config.h',
+        'model/quagga/ripngd/ripng-config.h',
+        'model/quagga/zebra/zebra-config.h',
+        'model/quagga/zebra/zebra-interface.h',
+        'helper/ibgp2d-helper.h',
+        'helper/ospf-graph-helper.h',
+        'helper/quagga-vty-helper.h',
+        'helper/tcp-client-helper.h',
+# MANDO >> Added
+        'helper/quagga-helper.h',
+
+    ]
+
+    module_source = module_source
+    module_headers = module_headers
+    uselib = ns3waf.modules_uselib(bld, ['core', 'network', 'internet', 'netlink', 'dce', "applications"])
+    module = ns3waf.create_module(bld, name='dce-quagga',
+                                  source=module_source,
+                                  headers=module_headers,
+                                  use=uselib,
+                                  lib=['dl'])
+#                                  lib=['dl','efence'])
+
+    build_dce_tests(module,bld)
+    build_dce_examples(module)
+    build_dce_kernel_examples(module)

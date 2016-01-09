@@ -1,0 +1,2105 @@
+/* -*- Mode:C++; c-file-style:"gnu"; indent-tabs-mode:nil; -*- */
+/*
+ * Copyright (c) 2012 Hajime Tazaki, NICT
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation;
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *
+ * Original author:
+ *   Hajime Tazaki <tazaki@nict.go.jp>
+ *
+ * Reworked by:
+ *   Marc-Olivier Buob  <marc-olivier.buob@orange.fr>
+ */
+
+#include "quagga-helper.h"
+
+#include <arpa/inet.h>                  // ::inet_pton
+#include <sys/stat.h>                   // ::mkdir
+#include <sys/types.h>                  // ::mkdir
+
+#include <fstream>                      // std::ofstream
+#include <list>                         // std::list
+#include <set>                          // std::set
+#include <sstream>                      // std::ostringstream
+#include <vector>                       // std::vector
+
+#include "ns3/ipv4-l3-protocol.h"
+#include "ns3/ipv4.h"                   // ns3::Ipv4
+#include "ns3/ipv4-address.h"           // ns3::Ipv4Address
+#include "ns3/ipv6-address.h"           // ns3::Ipv6Address, ns3::Ipv6Prefix
+#include "ns3/log.h"
+#include "ns3/names.h"                  // ns3::Names
+#include "ns3/object-factory.h"
+
+#define DUMMY_ASN 0
+#define DEFAULT_HOSTNAME       "zebra"
+#define DEFAULT_PASSWORD       "zebra"
+#define DEFAULT_ZEBRA_HOSTNAME "zebra"
+#define DEFAULT_BGPD_HOSTNAME  "bgpd"
+#define DEFAULT_OSPF_HOSTNAME  "ospf"
+
+#define REDISTRIBUTE_KERNEL     1 << 0
+#define REDISTRIBUTE_STATIC     1 << 1
+#define REDISTRIBUTE_CONNECTED  1 << 2
+#define REDISTRIBUTE_RIP        1 << 3
+#define REDISTRIBUTE_OSPF       1 << 4
+#define REDISTRIBUTE_BGP        1 << 5
+
+NS_LOG_COMPONENT_DEFINE ("QuaggaHelper");
+
+namespace ns3 {
+
+//---------------------------------------------------------------------------
+// Private functions
+//---------------------------------------------------------------------------
+
+static std::string AddressToString(const Address & address) {
+    std::ostringstream oss;
+    if (Ipv4Address::IsMatchingType(address)) {
+        oss << Ipv4Address::ConvertFrom(address);
+    } else if (Ipv6Address::IsMatchingType(address)) {
+        oss << Ipv6Address::ConvertFrom(address);
+    } else {
+        NS_LOG_WARN ("AddressToString: unknown address type.");
+    }
+    return oss.str();
+}
+
+static bool Ipv4AddressFromString(const std::string & s, Ipv4Address & ipv4) {
+    struct in_addr addr;
+    bool ret = ::inet_pton(AF_INET, s.c_str(), &addr);
+    if (ret) {
+        ipv4 = Ipv4Address(s.c_str());
+    }
+    return ret;
+}
+
+static bool Ipv6AddressFromString(const std::string & s, Ipv6Address & ipv6) {
+    struct in_addr addr;
+    bool ret = ::inet_pton(AF_INET6, s.c_str(), &addr);
+    if (ret) {
+        ipv6 = Ipv6Address(s.c_str());
+    }
+    return ret;
+}
+
+static std::string Ipv4PrefixToString(const Ipv4Prefix & x) {
+    std::ostringstream oss;
+    oss << x.GetAddress() << "/" << x.GetMask();
+    std::string ret(oss.str());
+    return ret;
+}
+
+static std::string GetNodeName(Ptr<Node> node) {
+    std::string nodeName = Names::FindName(node);
+    if (nodeName == "") {
+        std::ostringstream oss;
+        oss << node->GetId();
+        nodeName = oss.str();
+    }
+    return nodeName;
+}
+
+//---------------------------------------------------------------------------
+// Internal fonctors
+//---------------------------------------------------------------------------
+
+struct CompareIpv4Prefix {
+    inline bool operator() (const Ipv4Prefix & x, const Ipv4Prefix & y) {
+        return Ipv4PrefixToString(x) < Ipv4PrefixToString(y);
+    }
+};
+
+struct CompareIpv6Prefix {
+    inline bool operator() (const Ipv6Prefix & x, const Ipv6Prefix & y) {
+        std::ostringstream oss_x, oss_y;
+        oss_x << x;
+        oss_y << y;
+        return oss_x.str() < oss_y.str();
+    }
+};
+
+//---------------------------------------------------------------------------
+// BaseConfig.
+// Each *Config should inherits this calss
+//---------------------------------------------------------------------------
+
+
+class QuaggaBaseConfig :
+    public Object
+{
+private:
+    std::string             m_configFilename;   /**< Absolute path of the configuration file. */
+    std::string             m_logFilename;      /**< Absolute path of the log file. */
+    std::string             m_hostname;         /**< Hostname written in the configuration file. */
+    std::string             m_password;         /**< Password written in the configuration file. */
+    bool                    m_debug;            /**< Set to true to turn on Zebra's debug. */
+    std::set<std::string>   m_debugCommands;    /**< Set of debug command. */
+public:
+    QuaggaBaseConfig(
+        const std::string & hostname = DEFAULT_HOSTNAME,
+        const std::string & password = DEFAULT_PASSWORD,
+        bool debug = true
+    ):
+        m_hostname(DEFAULT_HOSTNAME),
+        m_password(DEFAULT_PASSWORD),
+        m_debug(debug)
+    {}
+
+    virtual ~QuaggaBaseConfig() {}
+
+    virtual const char * GetDaemonName() const = 0;
+
+    /**
+     * \brief Set the password that will be written in the configuration file.
+     * \param password The new password.
+     */
+
+    inline void SetPassword (const std::string & password) {
+        this->m_password = password;
+    }
+
+    /**
+     * \brief Retrieve the hostname that will be written in the configuration file.
+     * \returns The corresponding hostname.
+     */
+
+    inline const std::string & GetPassword () const {
+        return this->m_password;
+    }
+
+    /**
+     * \brief Set the hostname that will be written in the configuration file.
+     * \param hostname The new hostname.
+     */
+
+    inline void SetHostname (const std::string & hostname) {
+        this->m_hostname = hostname;
+    }
+
+    /**
+     * \brief Retrieve the hostname that will be written in the configuration file.
+     * \returns The corresponding hostname.
+     */
+
+    inline const std::string & GetHostname () const {
+        return this->m_hostname;
+    }
+
+    inline void SetConfigFilename (const std::string & filename) {
+        this->m_configFilename = filename;
+    }
+
+    inline const std::string & GetConfigFilename () const {
+        return this->m_configFilename;
+    }
+
+    inline void SetLogFilename(const std::string & filename) {
+        this->m_logFilename = filename;
+    }
+
+    inline const std::string & GetLogFilename() const {
+        return this->m_logFilename;
+    }
+
+    inline void SetDebug(bool debug = true) {
+        this->m_debug = debug;
+    }
+
+    inline bool GetDebug() const {
+        return this->m_debug;
+    }
+
+    inline void SetDebugCommand(const std::string & command, bool newState = true) {
+        if (newState) {
+            this->m_debugCommands.insert(command);
+        } else {
+            this->m_debugCommands.erase(command);
+        }
+    }
+
+    virtual void Print (std::ostream & os) const {
+        // Log section
+        os << "hostname " << this->GetHostname() << std::endl
+           << "password " << this->GetPassword() << std::endl
+           << "log file " << this->GetLogFilename() << " debugging" << std::endl
+           << "no log syslog" << std::endl
+           << "!" << std::endl;
+
+        // Debug section
+        if (this->GetDebug() && this->m_debugCommands.size() > 0) {
+            std::set<std::string>::const_iterator
+                sit (this->m_debugCommands.begin()),
+                send(this->m_debugCommands.end());
+            for (; sit != send; ++sit) {
+                const std::string & command = *sit;
+                os << "debug " << this->GetDaemonName() << " " << command << std::endl;
+            }
+            os << "!" << std::endl;
+        }
+    }
+
+    static inline std::string MakeDefaultLogFilename(const std::string & daemonName) {
+        std::ostringstream oss;
+        oss << "/var/log/" << daemonName << ".log";
+        std::string ret = oss.str();
+        return ret;
+    }
+};
+
+std::ostream & operator << (std::ostream & os, const QuaggaBaseConfig & config) {
+    config.Print(os);
+    return os;
+}
+
+//---------------------------------------------------------------------------
+// QuaggaConfig
+//---------------------------------------------------------------------------
+
+
+class ZebraInterface {
+public:
+    typedef std::set<Ipv4Prefix, CompareIpv4Prefix> prefixes_v4_t;
+    typedef std::set<Ipv6Prefix, CompareIpv6Prefix> prefixes_v6_t;
+
+private:
+    std::string   name; // Read only
+    std::string   description;
+    prefixes_v4_t prefixes_v4;
+    prefixes_v6_t prefixes_v6;
+    bool          link_detect;
+
+public:
+    ZebraInterface() {}
+
+    ZebraInterface(
+        const std::string & name,
+        const std::string & description
+    ):
+        name(name),
+        description(description),
+        link_detect(true)
+    {}
+
+    inline const std::string & GetName() const {
+        return this->name;
+    }
+
+    inline void SetName(const std::string & name) {
+        this->name = name;
+    }
+
+    inline const std::string & GetDescription() const {
+        return this->description;
+    }
+
+    inline void AddPrefix(const Ipv4Prefix & prefix) {
+        this->prefixes_v4.insert(prefix);
+    }
+
+    inline void AddPrefix(const Ipv6Prefix & prefix) {
+        this->prefixes_v6.insert(prefix);
+    }
+
+    inline const prefixes_v4_t & GetPrefixesV4() const {
+        return this->prefixes_v4;
+    }
+
+    inline const prefixes_v6_t & GetPrefixesV6() const {
+        return this->prefixes_v6;
+    }
+
+    inline bool GetLinkDetect() const {
+        return this->link_detect;
+    }
+
+    virtual std::ostream & Print(std::ostream & out) const {
+        const ZebraInterface & interface = *this;
+        const std::string & description = interface.GetDescription();
+
+        out << "interface " << interface.GetName() << std::endl;
+
+        if (description != "") {
+            out << "  description " << description << std::endl;
+        }
+
+
+        // IPv4 addresses & mask attached to this interface
+        const ZebraInterface::prefixes_v4_t & prefixes_v4 = interface.GetPrefixesV4();
+        {
+            ZebraInterface::prefixes_v4_t::const_iterator
+                it (prefixes_v4.begin()),
+                end(prefixes_v4.end());
+            for (;it != end; ++it) {
+                const Ipv4Prefix & prefix = *it;
+                out << "  ip address " << prefix.GetAddress() << '/' << prefix.GetMask().GetPrefixLength() << std::endl;
+            }
+        }
+
+        // IPv6 addresses & mask attached to this interface
+        const ZebraInterface::prefixes_v6_t & prefixes_v6 = interface.GetPrefixesV6();
+        {
+            ZebraInterface::prefixes_v6_t::const_iterator
+                it (prefixes_v6.begin()),
+                end(prefixes_v6.end());
+            for (;it != end; ++it) {
+                const Ipv6Prefix & prefix = *it;
+                out << "  ipv6 address ";
+                prefix.Print(out);
+                out << std::endl;
+            }
+        }
+
+        if (interface.GetLinkDetect()) {
+            out << "  link-detect" << std::endl;
+        }
+
+        return out;
+    }
+};
+
+std::ostream & operator << (std::ostream & out, const ZebraInterface & interface) {
+    return interface.Print(out);
+}
+
+class ZebraConfig :
+    public QuaggaBaseConfig
+{
+public:
+    typedef std::map<Ipv4Address, std::set<Ipv4Prefix, CompareIpv4Prefix> >    static_routes_v4_t;
+    typedef std::map<std::string, ZebraInterface>          interfaces_t;
+private:
+    const char * s_daemonName = "zebra"; // static
+    std::map<std::string, std::string>      m_radvd_if;
+    std::set<std::string>                   m_haflag_if;       /**< Set of interfaces enabling Home Agent Flag */
+    interfaces_t                            m_interfaces;      /**< Set of IP assign to the loopback */
+    static_routes_v4_t                      m_static_routes_v4;
+public:
+    ZebraConfig(
+        const std::string & hostname = DEFAULT_ZEBRA_HOSTNAME,
+        const std::string & password = DEFAULT_PASSWORD,
+        bool debug = true
+    ):
+        QuaggaBaseConfig(hostname, password, debug)
+    {
+        this->SetDebugCommand("kernel");
+        this->SetDebugCommand("events");
+    }
+
+    ~ZebraConfig () {}
+
+    const char * GetDaemonName() const {
+        return ZebraConfig::s_daemonName;
+    }
+
+    static TypeId GetTypeId () {
+        static TypeId tid = TypeId ("ns3::QuaggaConfig")
+            .SetParent<Object>()
+            .AddConstructor<ZebraConfig>();
+        return tid;
+    }
+
+    TypeId GetInstanceTypeId () const {
+        return this->GetTypeId ();
+    }
+
+    inline void AddRadvdIf(const std::string & ipInterface, const std::string & prefix) {
+        this->m_radvd_if[ipInterface] = prefix;
+    }
+
+    inline void EnableHomeAgentFlag(const std::string & ipInterface) {
+        this->m_haflag_if.insert(ipInterface);
+    }
+
+    inline void AddInterface(const std::string & name, const ZebraInterface & interface) {
+        this->m_interfaces[name] = interface;
+    }
+
+    void AddStaticRoute(const Ipv4Address & interface, const Ipv4Prefix & prefix) {
+        this->m_static_routes_v4[interface].insert(prefix);
+    }
+
+    void AddLoopback(const Address & address) {
+        /*
+        if (Ipv4Address::IsMatchingType(address)) {
+            std::cout << "QuaggaConfig::AddLoopback(): ADDING" << std::endl;
+            QuaggaInterface interface("ns3-device0", "loopback");
+            Ipv4Address loopbackAddress = Ipv4Address::ConvertFrom(address);
+            Ipv4Prefix loopbackPrefix = Ipv4Prefix(loopbackAddress, Ipv4Mask(0xffffffff));
+//            interface.AddPrefix(loopbackPrefix);
+            this->AddInterface(interface.GetName(), interface);
+            this->AddStaticRoute(loopbackAddress, loopbackPrefix);
+        } else if (Ipv6Address::IsMatchingType(address)) {
+            std::cerr << "QuaggaConfig::AddLoopback: address type not yet supported" << std::endl;
+        } else {
+            std::cerr << "QuaggaConfig::AddLoopback: Invalid address type" << std::endl;
+        }
+        */
+    }
+
+    virtual void Print(std::ostream & os) const {
+        QuaggaBaseConfig::Print(os);
+
+        // radvd (for backward compatibility)
+        for (std::map<std::string, std::string>::const_iterator i = this->m_radvd_if.begin (); i != this->m_radvd_if.end (); ++i) {
+            const std::string & ipInterface = i->first;
+            const std::string & prefix = i->second;
+
+            os << "interface " << ipInterface << std::endl
+               << " ipv6 nd ra-interval 5" << std::endl;
+
+            if (prefix.length () != 0) {
+                os << " ipv6 nd prefix " << prefix << " 300 150" << std::endl;
+            }
+
+            os << " no ipv6 nd suppress-ra" << std::endl
+               << '!' << std::endl;
+        }
+
+        // ha flag (for backward compatibility)
+        for (std::set<std::string>::const_iterator i = this->m_haflag_if.begin (); i != this->m_haflag_if.end (); ++i) {
+            const std::string & ipInterface = *i;
+            os << "interface " << ipInterface << std::endl
+               << " ipv6 nd home-agent-osig-flag" << std::endl
+               << '!' << std::endl;
+        }
+
+        // standard interfaces
+        for (interfaces_t::const_iterator i = this->m_interfaces.begin(); i != this->m_interfaces.end(); ++i) {
+            const ZebraInterface & interface = i->second;
+            os << interface
+               << '!' << std::endl;
+        }
+
+        // static routes
+        for (static_routes_v4_t::const_iterator i = this->m_static_routes_v4.begin(); i != this->m_static_routes_v4.end(); ++i) {
+            const Ipv4Address & interface = i->first;
+            const std::set<Ipv4Prefix, CompareIpv4Prefix> & prefixes = i->second;
+            for (std::set<Ipv4Prefix, CompareIpv4Prefix>::const_iterator j = prefixes.begin(); j != prefixes.end(); ++j) {
+                const Ipv4Prefix & prefix = *j;
+                os << "ip route " << prefix.GetAddress() << "/" << prefix.GetMask().GetPrefixLength() << ' ' << interface << std::endl;
+            }
+        }
+    }
+};
+
+//---------------------------------------------------------------------------
+// OspfConfig
+//---------------------------------------------------------------------------
+
+typedef uint16_t OspfCost;
+
+class OspfInterface {
+private:
+    std::string m_name;           // Read only
+    uint16_t m_helloInterval;
+    uint16_t m_deadInterval;
+    OspfCost m_cost;
+public:
+    OspfInterface() {}
+
+    OspfInterface(
+        const std::string & name,
+        uint16_t cost
+    ):
+        m_name(name),
+        m_cost(cost),
+        m_helloInterval(2),
+        m_deadInterval(6)
+    {}
+
+    inline const std::string & GetName() const {
+        return this->m_name;
+    }
+
+    inline uint16_t GetCost() const {
+        return this->m_cost;
+    }
+
+    inline void SetCost(uint16_t cost) {
+        this->m_cost = cost;
+    }
+
+    inline uint16_t GetHelloInterval() const {
+        return this->m_helloInterval;
+    }
+
+    inline void SetHelloInterval(uint16_t interval) {
+        this->m_helloInterval = interval;
+    }
+
+    inline uint16_t GetDeadInterval() const {
+        return this->m_deadInterval;
+    }
+
+    inline void SetDeadInterval(uint16_t interval) {
+        this->m_deadInterval = interval;
+    }
+};
+
+std::ostream & operator << (std::ostream & out, const OspfInterface & interface) {
+    std::string s("  ip ospf ");
+    out << "interface " << interface.GetName() << std::endl;
+
+    if (interface.GetHelloInterval()) {
+        out << s << "hello-interval " << interface.GetHelloInterval() << std::endl;
+    }
+
+    if (interface.GetDeadInterval()) {
+        out << s << "dead-interval " << interface.GetDeadInterval() << std::endl;
+    }
+
+    out << s << "cost " << interface.GetCost() << std::endl;
+    return out;
+}
+
+class OspfRedistribute {
+private:
+    uint8_t     m_from;           /**< Any REDISTRIBUTE_* value except REDISTRIBUTE_OSPF. */
+    uint8_t     m_metricType;    /**< 1 or 2. Ignored otherwise */
+    uint32_t    m_metric;         /**< OSPF metric, encoded in 32 bits to exceed max cost that might be set in the AS. */
+    std::string m_routeMap;      /**< Route-map name, ignored if empty. */
+public:
+    OspfRedistribute(){}
+
+    OspfRedistribute(uint8_t from, uint8_t metric_type = 0, uint32_t metric = 0, const std::string & route_map = ""):
+        m_from        (from),
+        m_metricType (metric_type),
+        m_metric      (metric),
+        m_routeMap   (route_map)
+    {}
+
+    inline uint8_t GetFrom() const {
+        return this->m_from;
+    }
+
+    inline uint8_t GetMetricType() const {
+        return this->m_metricType;
+    }
+
+    inline uint32_t GetMetric() const {
+        return this->m_metric;
+    }
+
+    inline const std::string & GetRouteMap() const {
+        return this->m_routeMap;
+    }
+};
+
+std::ostream & operator << (std::ostream & out, const OspfRedistribute & redistribute) {
+    uint8_t from = redistribute.GetFrom();
+
+    if (from) {
+        out << "redistribute ";
+        if      (from & REDISTRIBUTE_KERNEL)    out << "kernel";
+        else if (from & REDISTRIBUTE_CONNECTED) out << "connected";
+        else if (from & REDISTRIBUTE_STATIC)    out << "static";
+        else if (from & REDISTRIBUTE_RIP)       out << "rip";
+        else if (from & REDISTRIBUTE_BGP)       out << "bgp";
+
+        uint8_t metric_type = redistribute.GetMetricType();
+        switch (metric_type) {
+            case 1:
+            case 2:
+                out << " metric-type " << metric_type;
+                break;
+        }
+
+        if (redistribute.GetMetric()) {
+            out << " metric " << redistribute.GetMetric();
+        }
+
+        if (redistribute.GetRouteMap() != "") {
+            out << redistribute.GetRouteMap();
+        }
+    }
+
+    return out;
+}
+
+bool operator < (const OspfRedistribute & x, const OspfRedistribute & y) {
+    return x.GetFrom() < y.GetFrom();
+}
+
+class OspfConfig :
+    public QuaggaBaseConfig
+{
+private:
+    const char * s_daemonName = "ospf"; // static
+
+    typedef std::map<Ipv4Prefix, Ipv4Address>    NetworksV4;
+    typedef std::map<std::string, OspfInterface> Interfaces;
+    typedef std::set<OspfRedistribute>           Redistributes;
+
+    NetworksV4      networks;       /**< Maps a prefix and the corresponding area in which we can redistribute it. */
+    Interfaces    interfaces;     /**< Maps for each interface identifier its corresponding OSPF weight. */
+    Ipv4Address     router_id;      /**< The OSPF router-id of this router. */
+    Redistributes m_redistributes;  /**< Specify which kind of routes are redistributed in OSPF. */
+
+public:
+
+    OspfConfig(
+        const std::string & hostname = DEFAULT_OSPF_HOSTNAME,
+        const std::string & password = DEFAULT_PASSWORD,
+        bool debug = true
+    ):
+        QuaggaBaseConfig(hostname, password, debug)
+    {
+        this->SetDebugCommand("event");
+        this->SetDebugCommand("nsm");
+        this->SetDebugCommand("ism");
+        this->SetDebugCommand("packet all");
+        this->AddRedistribute(REDISTRIBUTE_KERNEL);
+        this->AddRedistribute(REDISTRIBUTE_CONNECTED);
+        this->AddRedistribute(REDISTRIBUTE_STATIC);
+    }
+
+    ~OspfConfig () {}
+
+    const char * GetDaemonName() const {
+        return OspfConfig::s_daemonName;
+    }
+
+    static TypeId GetTypeId () {
+        static TypeId tid = TypeId("ns3::OspfConfig")
+            .SetParent<Object>()
+            .AddConstructor<OspfConfig>();
+        return tid;
+    }
+
+    TypeId GetInstanceTypeId() const {
+        return this->GetTypeId ();
+    }
+
+    inline void SetRouterId(const Ipv4Address & routerId) {
+        this->router_id = routerId;
+    }
+
+    inline void AddNetwork(const Ipv4Prefix & prefix, const Ipv4Address & area) {
+        this->networks[prefix] = area;
+    }
+
+    inline void AddRedistribute(const OspfRedistribute & redistribute) {
+        this->m_redistributes.insert(redistribute);
+    }
+
+    /**
+     * \brief Redistribute a kind of route in OSPF
+     * \param A REDISTRIBUTE_* constant (except REDISTRIBUTE_OSPF).
+     *    This is not a mask so pass a single REDISTRIBUTE_* constant.
+     */
+
+    inline void SetRedistribute(uint8_t x) {
+        if (x != REDISTRIBUTE_OSPF) {
+            this->AddRedistribute(OspfRedistribute(x));
+        }
+    }
+
+    /**
+     * \brief Add an interface with a named prefixed "ns3-device".
+     * \param ifn The index of the interface.
+     * \param cost The OSPF cost to be configured for this interface.
+     */
+
+    void AddInterface(uint32_t ifn, uint16_t cost) {
+        std::ostringstream oss;
+        oss << "ns3-device" << ifn;
+        std::string name = oss.str();
+        OspfInterface interface(name, cost);
+
+        // Good practices suggest to set dead-interval = 3 * hello-interval
+        interface.SetHelloInterval(2);
+        interface.SetDeadInterval(3 * interface.GetHelloInterval());
+
+        this->interfaces[name] = OspfInterface(name, cost);
+    }
+
+    virtual void Print(std::ostream & os) const {
+        QuaggaBaseConfig::Print(os);
+
+        for (Interfaces::const_iterator it = this->interfaces.begin(); it != this->interfaces.end (); ++it) {
+            const OspfInterface & interface = it->second;
+            os << interface
+               << '!' << std::endl;
+        }
+
+        os << "router ospf " << std::endl;
+        //    os << "  ospf router-id " << router_id << std::endl;
+
+        for (NetworksV4::const_iterator it = this->networks.begin(); it != this->networks.end(); ++it) {
+            const Ipv4Prefix & prefix = it->first;
+            const Ipv4Address & area = it->second;
+            os << "network " << prefix << " area " << area << std::endl;
+        }
+
+        for (Redistributes::const_iterator it = this->m_redistributes.begin(); it != this->m_redistributes.end(); ++it) {
+            const OspfRedistribute & redistribute = *it;
+            os << redistribute << std::endl;
+        }
+
+        os << "!" << std::endl;
+    }
+};
+
+//---------------------------------------------------------------------------
+// BgpConfig
+//---------------------------------------------------------------------------
+
+struct BgpNeighbor {
+private:
+    uint32_t    m_remoteAs;
+    Address     ù_address; // Read only
+    std::string m_description;
+    bool        m_enableRrClient;
+    bool        m_enableNexthopSelf;
+    bool        m_updateSource;
+    Address     m_updateSourceAddress;
+    bool        m_defaultOriginate;
+
+    // Add access list, prefix list, etc...
+public:
+
+    BgpNeighbor() {}
+
+    BgpNeighbor(
+        const Address & address,
+        const uint32_t & asn,
+        const std::string & description = ""
+    ):
+        m_remoteAs(asn),
+        ù_address(address),
+        m_description(description),
+        m_enableRrClient(false),
+        m_enableNexthopSelf(false),
+        m_updateSource(false),
+        m_updateSourceAddress(),
+        m_defaultOriginate(false)
+    {}
+
+    BgpNeighbor(const BgpNeighbor & neighbor):
+        m_remoteAs              (neighbor.GetRemoteAs()),
+        ù_address                (neighbor.GetAddress()),
+        m_description            (neighbor.GetDescription()),
+        m_enableRrClient (neighbor.GetRouteReflectorClient()),
+        m_enableNexthopSelf          (neighbor.GetNextHopSelf()),
+        m_updateSource          (neighbor.GetUpdateSource()),
+        m_updateSourceAddress  (neighbor.GetUpdateSourceAddress()),
+        m_defaultOriginate      (neighbor.GetDefaultOriginate())
+    {}
+
+    inline void SetRemoteAs(uint32_t asn) {
+        this->m_remoteAs = asn;
+    }
+
+    inline uint32_t GetRemoteAs() const {
+        return this->m_remoteAs;
+    }
+
+    inline const Address & GetAddress() const {
+        return this->ù_address;
+    }
+
+    inline void SetDescription(const std::string & description) {
+        this->m_description = description;
+    }
+
+    inline const std::string & GetDescription() const {
+        return this->m_description;
+    }
+
+    inline void SetRouteReflectorClient(bool on = true) {
+        this->m_enableRrClient = on;
+    }
+
+    inline bool GetRouteReflectorClient() const {
+        return this->m_enableRrClient;
+    }
+
+    inline void SetNextHopSelf(bool on = true) {
+        this->m_enableNexthopSelf = on;
+    }
+
+    inline bool GetNextHopSelf() const {
+        return this->m_enableNexthopSelf;
+    }
+
+    inline void SetUpdateSource(const Address & address) {
+        // This implies setsockopt and root privileges!
+        this->m_updateSource = true;
+        this->m_updateSourceAddress = address;
+    }
+
+    inline void UnsetUpdateSource() {
+        this->m_updateSource = false;
+    }
+
+    inline bool GetUpdateSource() const {
+        return this->m_updateSource;
+    }
+
+    inline const Address & GetUpdateSourceAddress() const {
+        return this->m_updateSourceAddress;
+    }
+
+    inline void SetDefaultOriginate(bool on = true) {
+        this->m_defaultOriginate = on;
+    }
+
+    inline bool GetDefaultOriginate() const {
+        return this->m_defaultOriginate;
+    }
+};
+
+std::ostream & operator << (std::ostream & out, const BgpNeighbor & neighbor) {
+    std::ostringstream oss;
+    oss << "  neighbor " << AddressToString(neighbor.GetAddress()) << ' ';
+    std::string s = oss.str();
+
+    out << s << "remote-as " << neighbor.GetRemoteAs() << std::endl;
+
+    if (Ipv6Address::IsMatchingType(neighbor.GetAddress())) {
+        oss << s << "activate" << std::endl;
+    }
+
+    if (neighbor.GetDescription() != "") {
+        out << s << "description " << neighbor.GetDescription() << std::endl;
+    }
+
+    if (neighbor.GetRouteReflectorClient()) {
+        out << s << "route-reflector-client" << std::endl;
+    }
+
+    if (neighbor.GetUpdateSource()) {
+        out << s << "update-source " << AddressToString(neighbor.GetUpdateSourceAddress()) << std::endl;
+    }
+
+    if (neighbor.GetNextHopSelf()) {
+        out << s << "next-hop-self" << std::endl;
+    }
+
+    if (neighbor.GetDefaultOriginate()) {
+        out << s << "default-originate" << std::endl;
+    }
+
+    return out;
+}
+
+class BgpConfig :
+  public QuaggaBaseConfig
+{
+private:
+    const char * s_daemonName = "bgp"; // static
+
+    // Types
+    typedef uint32_t                                    Asn;
+    typedef Address                                     router_id_t;
+    typedef std::map<Ipv4Address, BgpNeighbor>          NeighborsV4;
+    typedef std::map<Ipv6Address, BgpNeighbor>          NeighborsV6;
+    typedef std::set<Ipv4Prefix, CompareIpv4Prefix>     NetworksV4;
+    typedef std::set<Ipv6Prefix, CompareIpv6Prefix>     NetworksV6;
+
+    ///////// << TO REMOVE
+    typedef std::list<std::string>                      networks_t;
+    ///////// >> TO REMOVE
+
+    // Members
+    bool            m_synchronization;
+    Asn           m_asn;                    /**< ASN of this BGP router. */
+    router_id_t     m_routerId;              /**< bgp router-id. */
+    uint8_t         m_maskRedistribute;       /**< Mask specifying which routes must be redistributed. */
+    NeighborsV4  m_neighborsV4;           /**< BGP neighbors (IPv4). */
+    NeighborsV6  m_neighborsV6;           /**< BGP neighbors (IPv6). */
+    NetworksV4   m_networksV4;            /**< IPv4 prefixes announced by this router. */
+    NetworksV6   m_networksV6;            /**< IPv6 prefixes announced by this router. */
+
+    ///////// << TO REMOVE
+    networks_t      networks;               /**< The prefixes announced by this router with BGP. */
+    ///////// >> TO REMOVE
+
+public:
+
+    /**
+     * \brief Constructor.
+     */
+
+    BgpConfig (
+        const std::string & hostname = DEFAULT_BGPD_HOSTNAME,
+        const std::string & password = DEFAULT_PASSWORD,
+        bool debug = true
+    ):
+        QuaggaBaseConfig(hostname, password, debug),
+        m_synchronization(false),
+        m_maskRedistribute(0)
+    {
+        this->SetDebugCommand("fsm");
+        this->SetDebugCommand("events");
+        this->SetDebugCommand("filters");
+        this->SetDebugCommand("updates");
+    }
+
+    /**
+     * \brief Destructor.
+     */
+
+    ~BgpConfig () {}
+
+    static TypeId GetTypeId () {
+        static TypeId tid = TypeId ("ns3::BgpConfig")
+            .SetParent<Object> ()
+            .AddConstructor<BgpConfig> ();
+        return tid;
+    }
+
+    TypeId GetInstanceTypeId () const {
+        return this->GetTypeId ();
+    }
+
+    const char * GetDaemonName() const {
+        return BgpConfig::s_daemonName;
+    }
+
+    /**
+     * \brief Set the AS Number corresponding to this BGP router.
+     * \param asn The AS Number (>0).
+     */
+
+    inline void SetAsn(uint32_t asn) {
+        this->m_asn = asn;
+    }
+
+    /**
+     * \brief Retrieve the AS Number corresponding to this BGP router.
+     * \returns The corresponding AS Number (>0).
+     */
+
+    inline uint32_t GetAsn() const {
+        return this->m_asn;
+    }
+
+    inline bool SetSynchronization(bool on = true) {
+        this->m_synchronization = on;
+    }
+
+    inline bool GetSynchronization() const {
+        return this->m_synchronization;
+    }
+
+    /**
+     * \brief Specifies which route must be redistributed in BGP.
+     * \param mask The new mask.
+     * Example: to redistribute connected route and OSPF routes, pass
+     *   REDISTRIBUTE_CONNECTED|REDISTRIBUTE_OSPF
+     */
+
+    inline void SetRedistribute(uint8_t mask) {
+        this->m_maskRedistribute = mask;
+    }
+
+    /**
+     * \returns The mask specifiying which kind of route must be
+     *   redistributed in BGP.
+     * Example: to test whether connected routes are redistributed,
+     *   (bgpConfig.GetRedistribute() & REDISTRIBUTE_CONNECTED)
+     */
+
+    inline uint8_t GetRedistribute() const {
+        return this->m_maskRedistribute;
+    }
+
+    /**
+     * \brief Set the BGP router id of this BGP router.
+     * \param router_id The new router-id.
+     */
+
+    inline void SetRouterId(const Address & routerId) {
+        this->m_routerId = routerId;
+    }
+
+    /**
+     * \brief Retrieve the BGP router id of this BGP router.
+     * \returns The corresponding router-id.
+     */
+
+    inline const router_id_t & GetRouterId() const {
+        return this->m_routerId;
+    }
+
+    // For backward compatibility
+    bool AddNeighbor(const std::string & neighborIp, uint32_t asn, const std::string & description) {
+        std::cout << "OBSOLETE: AddNeighbor()" << std::endl;
+        Ipv4Address ipv4;
+        if (Ipv4AddressFromString(neighborIp, ipv4)) {
+            BgpNeighbor neighbor(ipv4, asn, description);
+            //neighbor.SetUpdateSource(this->GetRouterId());
+            this->m_neighborsV4[ipv4] = neighbor;
+            return true;
+        }
+
+        Ipv6Address ipv6;
+        if (Ipv6AddressFromString(neighborIp, ipv6)) {
+            BgpNeighbor neighbor(ipv6, asn, description);
+            //neighbor.SetUpdateSource(this->GetRouterId());
+            this->m_neighborsV6[ipv6] = neighbor;
+            return true;
+        }
+
+        NS_LOG_WARN ("AddNeighbor: invalid address: " << neighborIp);
+        return false;
+    }
+
+    void AddNeighbor(const BgpNeighbor & neighbor) {
+        const Address & address = neighbor.GetAddress();
+        if (Ipv4Address::IsMatchingType(address)) {
+            Ipv4Address ipv4 = Ipv4Address::ConvertFrom(address);
+            std::cout << AddressToString(this->GetRouterId()) << ": adding neighbor " << ipv4 << ":" << std::endl
+                      << neighbor;
+            this->m_neighborsV4[ipv4] = neighbor;
+        } else if (Ipv6Address::IsMatchingType(address)) {
+            Ipv6Address ipv6 = Ipv6Address::ConvertFrom(address);
+            this->m_neighborsV6[ipv6] = neighbor;
+        } else {
+            NS_LOG_WARN ("AddNeighbor: invalid address type.");
+        }
+    }
+
+    void AddIBgpNeighbor(
+        const Address     & neighborIp,
+        const std::string & description
+    ) {
+        BgpNeighbor neighbor(neighborIp, this->GetAsn(), description);
+        this->AddNeighbor(neighbor);
+    }
+
+    void AddRrClient(
+        const Address     & neighborIp,
+        const std::string & description
+    ) {
+        BgpNeighbor neighbor(neighborIp, this->GetAsn(), description);
+        neighbor.SetRouteReflectorClient(true);
+        this->AddNeighbor(neighbor);
+    }
+
+    // For backward compatibility
+    void AddNetwork(const std::string & prefix) {
+        this->networks.push_back(prefix);
+    }
+
+    void AddNetwork(const Ipv4Prefix & prefix) {
+        this->m_networksV4.insert(prefix);
+    }
+
+    void AddNetwork(const Ipv6Prefix & prefix) {
+        this->m_networksV6.insert(prefix);
+    }
+
+    /**
+     * \brief Write the BGP configuration file in an output stream.
+     * \param os The output stream.
+     */
+
+    virtual void Print(std::ostream & os) const {
+        QuaggaBaseConfig::Print(os);
+
+        std::string routerId = AddressToString(this->m_routerId);
+        uint32_t asn = this->GetAsn();
+
+        os << "router bgp "    << asn      << std::endl
+           << "bgp router-id " << routerId << std::endl;
+
+        if (!this->GetSynchronization()) {
+            os << "no synchronization" << std::endl;
+        }
+
+        os << "!" << std::endl;
+
+        // If configured, redistributed some kind of routes in BGP
+        // TODO we should rename OspfRedistribute into QuaggaRedistribute and use it instead
+        if (uint8_t mask = this->GetRedistribute()) {
+            if (mask & REDISTRIBUTE_KERNEL)     os << "redistribute kernel"    << std::endl;
+            if (mask & REDISTRIBUTE_STATIC)     os << "redistribute static"    << std::endl;
+            if (mask & REDISTRIBUTE_CONNECTED)  os << "redistribute connected" << std::endl;
+            if (mask & REDISTRIBUTE_RIP)        os << "redistribute rip"       << std::endl;
+            if (mask & REDISTRIBUTE_OSPF)       os << "redistribute ospf"      << std::endl;
+            os << "!" << std::endl;
+        }
+
+        // IPv4 ---------------------------------------------------------------------------------------
+
+        // <<<<<<<< FOR BACKWARD COMPATIBILITY (we should use networks_v4 or networks_v6)
+        // Configure each network announced with BGP
+        // os << "  address-family ipv4 unicast" << std::endl;
+        for (networks_t::const_iterator it = this->networks.begin(); it != this->networks.end(); it++) {
+            const std::string & prefixNetwork = *it;
+            os << "network " << prefixNetwork << std::endl
+               << "!" << std::endl;
+        }
+        // >>>>>>>> FOR BACKWARD COMPATIBILITY
+
+        if (!this->m_networksV4.empty() || !this->m_neighborsV4.empty()) {
+            // Networks IPv4
+            if (!this->m_networksV4.empty()) {
+                for (NetworksV4::const_iterator it = this->m_networksV4.begin(); it != this->m_networksV4.end(); it++) {
+                    const Ipv4Prefix & prefix = *it;
+                    os << "network " << prefix << std::endl;
+                }
+                os << "!" << std::endl;
+            }
+
+            // Neighbors IPv4
+            for (NeighborsV4::const_iterator it = this->m_neighborsV4.begin(); it != this->m_neighborsV4.end(); ++it) {
+                const BgpNeighbor & neighbor = it->second;
+                os << neighbor
+                   << "!" << std::endl;
+            }
+        }
+
+        // IPv6 ---------------------------------------------------------------------------------------
+
+        if (!this->m_networksV6.empty() || !this->m_neighborsV6.empty()) {
+            os << "address-family ipv6 unicast" << std::endl
+               << "!" << std::endl;
+
+            // Networks IPv6
+            if (!this->m_networksV6.empty()) {
+                for (NetworksV6::const_iterator it = this->m_networksV6.begin(); it != this->m_networksV6.end(); it++) {
+                    const Ipv6Prefix & prefix = *it;
+                    os << "network " << prefix << std::endl;
+                }
+                os << "!" << std::endl;
+            }
+
+            // Neighbors IPv6
+            for (NeighborsV6::const_iterator it = this->m_neighborsV6.begin(); it != this->m_neighborsV6.end(); ++it) {
+                const BgpNeighbor & neighbor = it->second;
+                os << neighbor
+                   << "!" << std::endl;
+            }
+
+            os << "exit address-family" << std::endl
+               << "!" << std::endl;
+        }
+    }
+};
+
+//---------------------------------------------------------------------------
+// Ospf6Config
+//---------------------------------------------------------------------------
+
+class Ospf6Config : public Object
+{
+private:
+public:
+  std::vector<std::string> *m_enable_if;
+  bool m_ospf6debug;
+  uint32_t m_router_id;
+  std::string m_filename;
+
+  Ospf6Config ()
+  {
+    m_enable_if = new std::vector<std::string> ();
+    m_ospf6debug = false;
+  }
+  ~Ospf6Config ()
+  {
+    delete m_enable_if;
+  }
+  static TypeId
+  GetTypeId (void)
+  {
+    static TypeId tid = TypeId ("ns3::Ospf6Config")
+      .SetParent<Object> ()
+      .AddConstructor<Ospf6Config> ()
+    ;
+    return tid;
+  }
+  TypeId
+  GetInstanceTypeId (void) const
+  {
+    return GetTypeId ();
+  }
+
+
+  void
+  SetFilename (const std::string &filename)
+  {
+    m_filename = filename;
+  }
+
+  std::string
+  GetFilename () const
+  {
+    return m_filename;
+  }
+
+  virtual void
+  Print (std::ostream& os) const
+  {
+    os << "hostname ospf6d" << std::endl
+       << "password zebra" << std::endl
+       << "log file /var/log/ospfd6.log debugging" << std::endl
+       << "no log syslog" << std::endl
+       << "service advanced-vty" << std::endl;
+
+
+    if (m_ospf6debug)
+      {
+        os << "debug ospf6 neighbor " << std::endl;
+        os << "debug ospf6 message all " << std::endl;
+        os << "debug ospf6 zebra " << std::endl;
+        os << "debug ospf6 interface " << std::endl;
+      }
+
+    for (std::vector<std::string>::iterator i = m_enable_if->begin ();
+         i != m_enable_if->end (); ++i)
+      {
+        os << "interface " << (*i) << std::endl;
+        os << " ipv6 ospf6 retransmit-interval 8" << std::endl;
+        os << "!" << std::endl;
+      }
+
+    for (std::vector<std::string>::iterator i = m_enable_if->begin ();
+         i != m_enable_if->end (); ++i)
+      {
+        if (i == m_enable_if->begin ())
+          {
+            os << "router ospf6" << std::endl;
+          }
+
+        os << " router-id 255.1.1." << (m_router_id % 255) << std::endl;
+        os << " interface " << (*i) << " area 0.0.0.0" << std::endl;
+        os << " redistribute connected" << std::endl;
+
+        if (i == m_enable_if->begin ())
+          {
+            os << "!" << std::endl;
+          }
+      }
+  }
+};
+
+//---------------------------------------------------------------------------
+// RipConfig
+//---------------------------------------------------------------------------
+
+class RipConfig : public Object
+{
+private:
+public:
+  std::vector<std::string> *m_enable_if;
+  bool m_ripdebug;
+  std::string m_filename;
+
+  RipConfig ()
+  {
+    m_enable_if = new std::vector<std::string> ();
+    m_ripdebug = false;
+  }
+
+  ~RipConfig ()
+  {
+    delete m_enable_if;
+  }
+
+  static TypeId
+  GetTypeId (void)
+  {
+    static TypeId tid = TypeId ("ns3::RipConfig")
+      .SetParent<Object> ()
+      .AddConstructor<RipConfig> ()
+    ;
+    return tid;
+  }
+
+  TypeId
+  GetInstanceTypeId (void) const
+  {
+    return GetTypeId ();
+  }
+
+
+  void
+  SetFilename (const std::string &filename)
+  {
+    m_filename = filename;
+  }
+
+  std::string
+  GetFilename () const
+  {
+    return m_filename;
+  }
+
+  virtual void
+  Print (std::ostream& os) const
+  {
+    os << "hostname ripd" << std::endl
+       << "password zebra" << std::endl
+       << "log file /var/log/ripd.log debugging" << std::endl
+       << "no log syslog" << std::endl
+       << "service advanced-vty" << std::endl;
+
+    if (m_ripdebug)
+      {
+        os << "debug rip events " << std::endl;
+        os << "debug rip packet send detail " << std::endl;
+        os << "debug rip packet recv detail " << std::endl;
+        os << "debug rip zebra " << std::endl;
+      }
+
+    for (std::vector<std::string>::iterator i = m_enable_if->begin ();
+         i != m_enable_if->end (); ++i)
+      {
+        if (i == m_enable_if->begin ())
+          {
+            os << "router rip" << std::endl;
+          }
+
+        os << " network " << (*i) << std::endl;
+        os << " redistribute connected" << std::endl;
+
+        if (i == m_enable_if->begin ())
+          {
+            os << "!" << std::endl;
+          }
+      }
+  }
+};
+
+//---------------------------------------------------------------------------
+// RipngConfig
+//---------------------------------------------------------------------------
+
+class RipngConfig : public Object
+{
+private:
+public:
+  std::vector<std::string> *m_enable_if;
+  bool m_ripngdebug;
+  std::string m_filename;
+
+  RipngConfig ()
+  {
+    m_enable_if = new std::vector<std::string> ();
+    m_ripngdebug = false;
+  }
+
+  ~RipngConfig ()
+  {
+    delete m_enable_if;
+  }
+
+  static TypeId
+  GetTypeId (void)
+  {
+    static TypeId tid = TypeId ("ns3::RipngConfig")
+      .SetParent<Object> ()
+      .AddConstructor<RipngConfig> ()
+    ;
+    return tid;
+  }
+
+  TypeId
+  GetInstanceTypeId (void) const
+  {
+    return GetTypeId ();
+  }
+
+
+  void
+  SetFilename (const std::string &filename)
+  {
+    m_filename = filename;
+  }
+
+  std::string
+  GetFilename () const
+  {
+    return m_filename;
+  }
+
+  virtual void
+  Print (std::ostream& os) const
+  {
+    os << "hostname ripngd" << std::endl
+       << "password zebra" << std::endl
+       << "log file /var/log/ripng.log debugging" << std::endl
+       << "no log syslog" << std::endl
+       << "service advanced-vty" << std::endl;
+
+    if (m_ripngdebug)
+      {
+        os << "debug ripng events " << std::endl
+           << "debug ripng packet send detail " << std::endl
+           << "debug ripng packet recv detail " << std::endl
+           << "debug ripng zebra " << std::endl;
+      }
+
+    for (std::vector<std::string>::iterator i = m_enable_if->begin ();
+         i != m_enable_if->end (); ++i)
+      {
+        if (i == m_enable_if->begin ())
+          {
+            os << "router ripng" << std::endl;
+          }
+
+        os << " network " << (*i) << std::endl
+           << " redistribute connected" << std::endl;
+
+        if (i == m_enable_if->begin ())
+          {
+            os << "!" << std::endl;
+          }
+      }
+  }
+};
+
+//---------------------------------------------------------------------------
+// QuaggaHelper
+//---------------------------------------------------------------------------
+
+QuaggaHelper::QuaggaHelper ():
+    m_useManualConf(false)
+{}
+
+void QuaggaHelper::SetAttribute (const std::string & name, const AttributeValue & value) {}
+
+//---------------------------------------------------------------------------
+// QuaggaHelper / Zebra
+//---------------------------------------------------------------------------
+
+static Ptr<ZebraConfig> GetQuaggaConfig(Ptr<Node> node) {
+    Ptr<ZebraConfig> quaggaConfig = node->GetObject<ZebraConfig>();
+
+    if (!quaggaConfig) {
+        quaggaConfig = CreateObject<ZebraConfig>();
+        node->AggregateObject(quaggaConfig);
+    }
+
+    return quaggaConfig;
+}
+
+void QuaggaHelper::EnableZebraDebug(NodeContainer nodes) {
+    for (NodeContainer::Iterator it = nodes.Begin(); it != nodes.End(); ++it) {
+        Ptr<Node>  node = *it;
+        Ptr<ZebraConfig> quaggaConfig = GetQuaggaConfig(node);
+        quaggaConfig->SetDebug(true);
+    }
+}
+
+void QuaggaHelper::EnableRadvd(Ptr<Node> node, const char * ifname, const char * prefix) {
+    GetQuaggaConfig(node)->AddRadvdIf(std::string (ifname), std::string (prefix));
+}
+
+void QuaggaHelper::EnableHomeAgentFlag(Ptr<Node> node, const char * ifname) {
+    GetQuaggaConfig(node)->EnableHomeAgentFlag(std::string(ifname));
+}
+
+void QuaggaHelper::UseManualZebraConfig(NodeContainer nodes) {
+    this->m_useManualConf = true;
+}
+
+void QuaggaHelper::AddLoopback(Ptr<Node> node, const Address & address) const {
+    GetQuaggaConfig(node)->AddLoopback(address);
+}
+
+void QuaggaHelper::AddStaticRoute(Ptr<Node> node, const Ipv4Address & interface, const Ipv4Prefix & prefix) {
+    GetQuaggaConfig(node)->AddStaticRoute(interface, prefix);
+}
+
+
+//---------------------------------------------------------------------------
+// QuaggaHelper / BGP
+//---------------------------------------------------------------------------
+
+static Ptr<BgpConfig> GetBgpConfig(Ptr<Node> node) {
+    Ptr<BgpConfig> bgpConfig = node->GetObject<BgpConfig>();
+
+    if (!bgpConfig) {
+        bgpConfig = CreateObject<BgpConfig>();
+        node->AggregateObject(bgpConfig);
+    }
+
+    return bgpConfig;
+}
+
+void QuaggaHelper::EnableBgp(NodeContainer nodes) {
+    for (NodeContainer::Iterator it = nodes.Begin(); it != nodes.End(); ++it) {
+        Ptr<Node> node = *it;
+        Ptr<BgpConfig> bgp_conf = node->GetObject<BgpConfig>();
+        if (!bgp_conf) {
+            bgp_conf = CreateObject<BgpConfig>();
+            bgp_conf->SetAsn (node->GetId());
+            node->AggregateObject(bgp_conf);
+        }
+    }
+}
+
+void QuaggaHelper::SetRouterId(Ptr<Node> node, const Address & routerId) {
+    Ptr<BgpConfig> bgp_conf = GetBgpConfig(node);
+    bgp_conf->SetRouterId(routerId);
+}
+
+void QuaggaHelper::SetRouterId(Ptr<Node> node, const std::string & routerId) {
+    this->SetRouterId(node, Ipv4Address(routerId.c_str()));
+}
+
+void QuaggaHelper::SetAsn(Ptr<Node> node, uint32_t asn) {
+    GetBgpConfig(node)->SetAsn(asn);
+}
+
+void QuaggaHelper::SetAsn(NodeContainer nodes, uint32_t asn) {
+    for (NodeContainer::Iterator it = nodes.Begin(); it != nodes.End(); ++it) {
+        Ptr<Node>  node = *it;
+        Ptr<BgpConfig> bgp_conf = GetBgpConfig(node);
+        bgp_conf->SetAsn (asn);
+    }
+}
+
+const Address & QuaggaHelper::GetRouterId (Ptr<Node> node) const {
+    Ptr<BgpConfig> bgp_conf = node->GetObject<BgpConfig> ();
+    return bgp_conf->GetRouterId ();
+}
+
+uint32_t QuaggaHelper::GetAsn (Ptr<Node> node) const {
+    Ptr<BgpConfig> bgp_conf = node->GetObject<BgpConfig> ();
+    return bgp_conf ? bgp_conf->GetAsn () : DUMMY_ASN;
+}
+
+void QuaggaHelper::BgpAddNeighbor(
+    Ptr<Node> node,
+    const std::string & neighborIp,
+    uint32_t asn,
+    const std::string & description
+) {
+    Ptr<BgpConfig> bgp_conf = node->GetObject<BgpConfig> ();
+
+    if (!bgp_conf) {
+        bgp_conf = CreateObject<BgpConfig> ();
+        bgp_conf->SetAsn (node->GetId ());
+        node->AggregateObject (bgp_conf);
+    }
+
+    bgp_conf->AddNeighbor (neighborIp, asn, description);
+}
+
+void QuaggaHelper::BgpAddIBgpNeighbor(
+    Ptr<Node> node,
+    const Address & neighborIp,
+    const std::string & description
+) {
+    GetBgpConfig(node)->AddIBgpNeighbor(neighborIp, description);
+}
+
+void QuaggaHelper::BgpAddRrClient(
+    Ptr<Node> node,
+    const Address & neighborIp,
+    const std::string & description
+) {
+    GetBgpConfig(node)->AddRrClient(neighborIp, description);
+}
+
+void QuaggaHelper::BgpAddPeerLink (Ptr<Node> node, const std::string & neighbor) {
+    std::cerr << "BgpAddPeerLink is not supported, please configure a route map for " << neighbor << std::endl;
+}
+
+void QuaggaHelper::BgpAddNetwork (Ptr<Node> node, const std::string & network) {
+    Ptr<BgpConfig> bgp_conf = node->GetObject<BgpConfig> ();
+    if (!bgp_conf) {
+        bgp_conf = CreateObject<BgpConfig> ();
+        bgp_conf->SetAsn (node->GetId ());
+        node->AggregateObject (bgp_conf);
+    }
+    bgp_conf->AddNetwork (network);
+}
+
+//---------------------------------------------------------------------------
+// QuaggaHelper / OSPF
+//---------------------------------------------------------------------------
+
+static Ptr<OspfConfig> GetOspfConfig(Ptr<Node> node) {
+    Ptr<OspfConfig> ospfConfig = node->GetObject<OspfConfig>();
+
+    if (!ospfConfig) {
+        ospfConfig = CreateObject<OspfConfig>();
+        node->AggregateObject(ospfConfig);
+    }
+
+    return ospfConfig;
+}
+
+void QuaggaHelper::EnableOspf (NodeContainer nodes, const Ipv4Prefix & prefix) {
+    for (NodeContainer::Iterator it = nodes.Begin(); it != nodes.End(); ++it) {
+        Ptr<OspfConfig> ospf_conf = GetOspfConfig(*it);
+        ospf_conf->AddNetwork (prefix, Ipv4Address("0.0.0.0"));
+    }
+}
+
+// << Backward compatibility
+void QuaggaHelper::EnableOspf (NodeContainer nodes, const char * prefix) {
+    this->EnableOspf(nodes, Ipv4Prefix(prefix));
+}
+// >> Backward compatibility
+
+void QuaggaHelper::EnableOspfDebug (NodeContainer nodes) {
+    for (NodeContainer::Iterator it = nodes.Begin(); it != nodes.End(); ++it) {
+        Ptr<Node> node = *it;
+        Ptr<OspfConfig> ospf_conf = GetOspfConfig(node);
+        ospf_conf->SetDebug(true);
+    }
+}
+
+void QuaggaHelper::OspfAddIf (Ptr<Node> node, uint32_t ifn, uint32_t metric) {
+  Ptr<OspfConfig> ospf_conf = GetOspfConfig(node);
+  ospf_conf->AddInterface(ifn, metric);
+  return;
+}
+
+//---------------------------------------------------------------------------
+// QuaggaHelper / OSPF6
+//---------------------------------------------------------------------------
+
+void
+QuaggaHelper::EnableOspf6 (NodeContainer nodes, const char * ifname)
+{
+  for (uint32_t i = 0; i < nodes.GetN (); i++)
+    {
+      Ptr<Ospf6Config> ospf6_conf = nodes.Get (i)->GetObject<Ospf6Config> ();
+      if (!ospf6_conf)
+        {
+          ospf6_conf = new Ospf6Config ();
+          nodes.Get (i)->AggregateObject (ospf6_conf);
+        }
+
+      ospf6_conf->m_enable_if->push_back (std::string (ifname));
+      ospf6_conf->m_router_id = i;
+    }
+
+  return;
+}
+
+void
+QuaggaHelper::EnableOspf6Debug (NodeContainer nodes)
+{
+  for (uint32_t i = 0; i < nodes.GetN (); i++)
+    {
+      Ptr<Ospf6Config> ospf6_conf = nodes.Get (i)->GetObject<Ospf6Config> ();
+      if (!ospf6_conf)
+        {
+          ospf6_conf = new Ospf6Config ();
+          nodes.Get (i)->AggregateObject (ospf6_conf);
+        }
+      ospf6_conf->m_ospf6debug = true;
+    }
+  return;
+}
+
+//---------------------------------------------------------------------------
+// QuaggaHelper / RIP
+//---------------------------------------------------------------------------
+
+void
+QuaggaHelper::EnableRip (NodeContainer nodes, const char * ifname)
+{
+  for (uint32_t i = 0; i < nodes.GetN (); i++)
+    {
+      Ptr<RipConfig> rip_conf = nodes.Get (i)->GetObject<RipConfig> ();
+      if (!rip_conf)
+        {
+          rip_conf = new RipConfig ();
+          nodes.Get (i)->AggregateObject (rip_conf);
+        }
+
+      rip_conf->m_enable_if->push_back (std::string (ifname));
+    }
+
+  return;
+}
+
+void
+QuaggaHelper::EnableRipDebug (NodeContainer nodes)
+{
+  for (uint32_t i = 0; i < nodes.GetN (); i++)
+    {
+      Ptr<RipConfig> rip_conf = nodes.Get (i)->GetObject<RipConfig> ();
+      if (!rip_conf)
+        {
+          rip_conf = new RipConfig ();
+          nodes.Get (i)->AggregateObject (rip_conf);
+        }
+      rip_conf->m_ripdebug = true;
+    }
+  return;
+}
+
+//---------------------------------------------------------------------------
+// QuaggaHelper / RIPNG
+//---------------------------------------------------------------------------
+
+void
+QuaggaHelper::EnableRipng (NodeContainer nodes, const char * ifname)
+{
+  for (uint32_t i = 0; i < nodes.GetN (); i++)
+    {
+      Ptr<RipngConfig> ripng_conf = nodes.Get (i)->GetObject<RipngConfig> ();
+      if (!ripng_conf)
+        {
+          ripng_conf = new RipngConfig ();
+          nodes.Get (i)->AggregateObject (ripng_conf);
+        }
+
+      ripng_conf->m_enable_if->push_back (std::string (ifname));
+    }
+
+  return;
+}
+
+void
+QuaggaHelper::EnableRipngDebug (NodeContainer nodes)
+{
+  for (uint32_t i = 0; i < nodes.GetN (); i++)
+    {
+      Ptr<RipngConfig> ripng_conf = nodes.Get (i)->GetObject<RipngConfig> ();
+      if (!ripng_conf)
+        {
+          ripng_conf = new RipngConfig ();
+          nodes.Get (i)->AggregateObject (ripng_conf);
+        }
+      ripng_conf->m_ripngdebug = true;
+    }
+  return;
+}
+
+void
+QuaggaHelper::GenerateConfigZebra (Ptr<Node> node)
+{
+  Ptr<ZebraConfig> zebra_conf = node->GetObject<ZebraConfig> ();
+
+  // config generation
+  std::stringstream conf_dir, conf_file;
+  conf_dir << "files-" << node->GetId() << "/" ;
+//  conf_dir << "files-" << GetNodeName(node);
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "usr/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "local/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "etc/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+
+  conf_file << conf_dir.str () << "/zebra.conf";
+  zebra_conf->SetConfigFilename ("/usr/local/etc/zebra.conf");
+
+  if (this->m_useManualConf)
+    {
+      return;
+    }
+
+  std::ofstream conf;
+  conf.open (conf_file.str ().c_str ());
+  zebra_conf->Print(conf);
+  conf.close ();
+}
+
+void
+QuaggaHelper::GenerateConfigOspf (Ptr<Node> node)
+{
+  NS_LOG_FUNCTION (node);
+
+  Ptr<OspfConfig> ospf_conf = node->GetObject<OspfConfig> ();
+  uint32_t id = 1 + node->GetId ();
+  ospf_conf->SetRouterId(Ipv4Address(id));
+
+  // config generation
+  std::ostringstream conf_dir, conf_file;
+  conf_dir << "files-" << node->GetId() << "/";
+//  conf_dir << "files-" << GetNodeName(node);
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "usr/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "local/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "etc/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+
+  conf_file << conf_dir.str () << "/ospfd.conf";
+  ospf_conf->SetConfigFilename ("/usr/local/etc/ospfd.conf");
+
+  std::ofstream conf;
+  conf.open (conf_file.str ().c_str ());
+  ospf_conf->Print (conf);
+  conf.close ();
+}
+
+static Ipv4Address GetDefaultRouterId(Ptr<Node> node) {
+    const Ipv4Address localhost("127.0.0.1");
+    Ipv4Address ret("0.0.0.0");
+
+    Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
+    uint32_t numInterfaces = ipv4->GetNInterfaces();
+
+    // In practice interface 0 corresponds to localhost and then we will
+    // pick the IP address of the interface 1.
+    for (uint32_t j = 0; j < numInterfaces; ++j) {
+        const Ipv4InterfaceAddress & ipv4InterfaceAddress = ipv4->GetAddress(j, 0);
+        Ipv4Address ipv4Address = ipv4InterfaceAddress.GetLocal();
+        if (ipv4Address != localhost) {
+            ret = ipv4Address;
+            break;
+        }
+    }
+
+    return ret;
+}
+
+void
+QuaggaHelper::GenerateConfigBgp (Ptr<Node> node)
+{
+    Ptr<BgpConfig> bgp_conf = node->GetObject<BgpConfig> ();
+
+    // Set the hostname (otherwise it will be set to DEFAULT_BGPD_HOSTNAME)
+    const std::string nodeName = GetNodeName(node);
+    bgp_conf->SetHostname(nodeName);
+
+    // Choose a default bgp router-id
+    if (bgp_conf->GetRouterId() == Address()) {
+        Ipv4Address routerId = GetDefaultRouterId(node);
+        bgp_conf->SetRouterId(routerId);
+    }
+
+    // config generation
+    std::ostringstream conf_dir, conf_file;
+    conf_dir << "files-" << node->GetId() << "/";
+//    conf_dir << "files-" << GetNodeName(node);
+    ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+    conf_dir << "usr/";
+    ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+    conf_dir << "local/";
+    ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+    conf_dir << "etc/";
+    ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+
+    conf_file << conf_dir.str () << "/bgpd.conf";
+    bgp_conf->SetConfigFilename ("/usr/local/etc/bgpd.conf");
+
+    std::ofstream conf;
+    conf.open (conf_file.str ().c_str ());
+    bgp_conf->Print (conf);
+    conf.close ();
+
+}
+
+void
+QuaggaHelper::GenerateConfigOspf6 (Ptr<Node> node)
+{
+  Ptr<Ospf6Config> ospf6_conf = node->GetObject<Ospf6Config> ();
+
+  // config generation
+  std::ostringstream conf_dir, conf_file;
+  conf_dir << "files-" << node->GetId() << "/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "usr/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "local/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "etc/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+
+  conf_file << conf_dir.str () << "/ospf6d.conf";
+  ospf6_conf->SetFilename ("/usr/local/etc/ospf6d.conf");
+  std::ofstream conf;
+  conf.open (conf_file.str ().c_str ());
+  ospf6_conf->Print (conf);
+  conf.close ();
+}
+
+void
+QuaggaHelper::GenerateConfigRip (Ptr<Node> node)
+{
+  NS_LOG_FUNCTION (node);
+
+  Ptr<RipConfig> rip_conf = node->GetObject<RipConfig> ();
+
+  // config generation
+  std::ostringstream conf_dir, conf_file;
+  conf_dir << "files-" << node->GetId() << "/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "usr/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "local/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "etc/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+
+  conf_file << conf_dir.str () << "/ripd.conf";
+  rip_conf->SetFilename ("/usr/local/etc/ripd.conf");
+
+  std::ofstream conf;
+  conf.open (conf_file.str ().c_str ());
+  rip_conf->Print (conf);
+  conf.close ();
+}
+
+void
+QuaggaHelper::GenerateConfigRipng (Ptr<Node> node)
+{
+  NS_LOG_FUNCTION (node);
+
+  Ptr<RipngConfig> ripng_conf = node->GetObject<RipngConfig> ();
+
+  // config generation
+  std::ostringstream conf_dir, conf_file;
+  conf_dir << "files-" << node->GetId() << "/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "usr/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "local/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+  conf_dir << "etc/";
+  ::mkdir (conf_dir.str ().c_str (), S_IRWXU | S_IRWXG);
+
+  conf_file << conf_dir.str () << "/ripngd.conf";
+  ripng_conf->SetFilename ("/usr/local/etc/ripngd.conf");
+
+  std::ofstream conf;
+  conf.open (conf_file.str ().c_str ());
+  ripng_conf->Print (conf);
+  conf.close ();
+}
+
+ApplicationContainer
+QuaggaHelper::Install (Ptr<Node> node)
+{
+  return ApplicationContainer (InstallPriv (node));
+}
+
+ApplicationContainer
+QuaggaHelper::Install (const std::string & nodeName)
+{
+  Ptr<Node> node = Names::Find<Node> (nodeName);
+  return ApplicationContainer (InstallPriv (node));
+}
+
+ApplicationContainer
+QuaggaHelper::Install (NodeContainer c)
+{
+  ApplicationContainer apps;
+  for (NodeContainer::Iterator i = c.Begin (); i != c.End (); ++i)
+    {
+      apps.Add (InstallPriv (*i));
+    }
+
+  return apps;
+}
+
+ApplicationContainer
+QuaggaHelper::InstallPriv (Ptr<Node> node)
+{
+  DceApplicationHelper process;
+  ApplicationContainer apps;
+
+  Ptr<ZebraConfig> zebra_conf = node->GetObject<ZebraConfig> ();
+  if (!zebra_conf)
+    {
+      zebra_conf = new ZebraConfig ();
+      node->AggregateObject (zebra_conf);
+    }
+  GenerateConfigZebra (node);
+  process.SetBinary ("zebra");
+  process.AddArguments ("-f", zebra_conf->GetConfigFilename ());
+  process.AddArguments ("-i", "/usr/local/etc/zebra.pid");
+  process.SetStackSize (1 << 16);
+  apps.Add (process.Install (node));
+  apps.Get (0)->SetStartTime (Seconds (1.0 + 0.01 * node->GetId ()));
+  node->AddApplication (apps.Get (0));
+
+  // OSPF
+  Ptr<OspfConfig> ospf_conf = node->GetObject<OspfConfig> ();
+  if (ospf_conf)
+    {
+      GenerateConfigOspf (node);
+      process.ResetArguments ();
+
+      process.SetBinary ("ospfd");
+      process.AddArguments ("-f", ospf_conf->GetConfigFilename ());
+      process.AddArguments ("-i", "/usr/local/etc/ospfd.pid");
+      apps.Add (process.Install (node));
+      apps.Get (1)->SetStartTime (Seconds (5.0 + 0.1 * node->GetId ()));
+      node->AddApplication (apps.Get (1));
+    }
+
+  // BGP
+  Ptr<BgpConfig> bgp_conf = node->GetObject<BgpConfig> ();
+  if (bgp_conf)
+    {
+      GenerateConfigBgp (node);
+      process.ResetArguments ();
+      process.SetBinary ("bgpd");
+      process.AddArguments ("-f", bgp_conf->GetConfigFilename ());
+      process.AddArguments ("-i", "/usr/local/etc/bgpd.pid");
+      apps = process.Install (node);
+      apps.Get (0)->SetStartTime (Seconds (5.0 + 0.3 * node->GetId ()));
+      //      apps.Get(0)->SetStartTime (Seconds (1.2 + 0.1 * node->GetId ()));
+      node->AddApplication (apps.Get (0));
+    }
+
+  // OSPF6
+  Ptr<Ospf6Config> ospf6_conf = node->GetObject<Ospf6Config> ();
+  if (ospf6_conf)
+    {
+      GenerateConfigOspf6 (node);
+      process.ResetArguments ();
+      process.SetBinary ("ospf6d");
+      process.AddArguments ("-f", ospf6_conf->GetFilename ());
+      process.AddArguments ("-i", "/usr/local/etc/ospf6d.pid");
+      apps = process.Install (node);
+      apps.Get (0)->SetStartTime (Seconds (5.0 + 0.5 * node->GetId ()));
+      node->AddApplication (apps.Get (0));
+    }
+
+  // RIP
+  Ptr<RipConfig> rip_conf = node->GetObject<RipConfig> ();
+  if (rip_conf)
+    {
+      GenerateConfigRip (node);
+      process.ResetArguments ();
+      process.SetBinary ("ripd");
+      process.AddArguments ("-f", rip_conf->GetFilename ());
+      process.AddArguments ("-i", "/usr/local/etc/ripd.pid");
+      apps = process.Install (node);
+      apps.Get (0)->SetStartTime (Seconds (5.0 + 0.5 * node->GetId ()));
+      node->AddApplication (apps.Get (0));
+    }
+
+  // RIPNG
+  Ptr<RipngConfig> ripng_conf = node->GetObject<RipngConfig> ();
+  if (ripng_conf)
+    {
+      GenerateConfigRipng (node);
+      process.ResetArguments ();
+      process.SetBinary ("ripngd");
+      process.AddArguments ("-f", ripng_conf->GetFilename ());
+      process.AddArguments ("-i", "/usr/local/etc/ripngd.pid");
+      apps = process.Install (node);
+      apps.Get (0)->SetStartTime (Seconds (5.0 + 0.5 * node->GetId ()));
+      node->AddApplication (apps.Get (0));
+    }
+
+  return apps;
+}
+bool BgpNeighbor::GetDefaultOriginate() const
+{
+    return this->m_defaultOriginate;
+}
+
+} // namespace ns3

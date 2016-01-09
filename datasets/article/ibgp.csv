@@ -1,0 +1,45 @@
+# RR topology :
+# Two RRs: b and f in "full mesh"
+# The other routers are RR-clients of the both RR.
+
+# full mesh RR
+b f OVER
+f b OVER
+
+# client a
+a b UP
+b a DOWN
+a f UP
+f a DOWN
+
+# client c
+c b UP
+b c DOWN
+c f UP
+f c DOWN
+
+# client d
+d b UP
+b d DOWN
+d f UP
+f d DOWN
+
+# client e
+e b UP
+b e DOWN
+e f UP
+f e DOWN
+
+# client g
+g b UP
+b g DOWN
+g f UP
+f g DOWN
+
+# client h
+h b UP
+b h DOWN
+h f UP
+f h DOWN
+
+

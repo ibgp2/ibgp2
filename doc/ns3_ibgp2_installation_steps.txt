@@ -1,0 +1,99 @@
+==============================================================
+A) Installation:
+==============================================================
+
+Overview : the following steps will:
+
+    - install ns3,
+    - install the iBGP2 sources in the ns3 source tree,
+    - disable examples/tests build,
+    - build the whole project.
+
+Steps:
+
+    1) Get the iBGP2 sources:
+
+        mkdir ~/git
+        cd ~/git
+        git clone https://github.com/ibgp2/ibgp2.git
+        cd ~/git/ibgp2/dce
+
+        If you checkout the iBGP2 source in another directory, please do step 2)a).
+
+    2) [optional] Configure env.sh:
+
+        vi ~/git/ibgp2/dce/env.sh
+
+        a) Check whether IBGP2_GIT is set to the appropriate value (or the installation will fail)
+
+            IBGP2_GIT: the directory where the iBGP2 sources have been retrieved (e.g. $HOME/git/ibgp2).
+
+        b) You might customize the following environment variables:
+
+            NS3_DIR: change this value to change the directory where NS3 will be retrieved and built.
+
+            NS3_VERSION: this value will be passed to bake to pull the corresponding version of ns3.
+                If you change this value the step (3) will fail, run:
+
+                    cp -r $IBGP2_GIT/source/ns-3\.*/* $NS3_DIR/dce/source/ns-3\.*/*
+                    cd $NS3_DIR/dce/
+                    ./build.sh
+
+            NS3_DCE_VERSION: this value will be passed to bake to pull the corresponding version of ns3.
+
+    3) Run the installation:
+
+        ./install.sh
+
+==============================================================
+B) Building the project:
+==============================================================
+
+cd ~/git/ns3/dce
+./build.sh
+
+==============================================================
+C) Adding file(s) to the iBGP2 project:
+==============================================================
+
+In ns3, wscripts are python scripts used to compile each module.  wscripts
+appears in several directories of the source tree.  Every cc file to compile
+must be referenced in the appropriate wscript (basically, the appropriate
+wscript in the one existing in the closest parent directory).
+
+The following wscripts have been altered.
+
+    source/ns-3.23/src/network/wscript
+    source/ns-3.23/src/applications/wscript
+    source/ns-3.23/src/internet/wscript
+    source/ns-3-dce/myscripts/ns-3-dce-quagga/wscript
+
+If the linkage fails, check whether there is not a missing dependency in your
+wscript(s).
+
+Example: Suppose that you developed ns3 application requiring PppHeader class.
+Then you must add the corresponding dependency (point-to-point) in
+ns-3.23/src/applications/wscript
+
+    ...
+    def build(bld):
+        module = bld.create_ns3_module('applications', ['internet', 'config-store', 'point-to-point', 'stats'])
+    ...
+
+If you experienced strange behaviour (application exiting abruptly), you should try to run:
+
+    cd ~/git/ns3/dce
+    ./env.sh
+    pushd $NS3_DIR/dce/source/ns-$NS3_VERSION > /dev/null ; ./waf ; popd > /dev/null
+    pushd $NS3_DIR/dce/source/ns-3-dce > /dev/null ; ./waf ; popd > /dev/null
+
+==============================================================
+D) Debugging
+==============================================================
+
+./waf --run "dce-ibgpv2-simu" --command-template="gdb %s --args <args>"
+
+Note:
+
+    Boolean option: If your program uses a boolean parameter (let say "--option") you must pass --option=true.
+
