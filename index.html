@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="UTF-8">
+    <title>iBGP2 by ibgp2</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" type="text/css" href="stylesheets/normalize.css" media="screen">
+    <link href='https://fonts.googleapis.com/css?family=Open+Sans:400,700' rel='stylesheet' type='text/css'>
+    <link rel="stylesheet" type="text/css" href="stylesheets/stylesheet.css" media="screen">
+    <link rel="stylesheet" type="text/css" href="stylesheets/github-light.css" media="screen">
+  </head>
+  <body>
+    <section class="page-header">
+      <h1 class="project-name">iBGP2</h1>
+      <h2 class="project-tagline">iBGP2: a scalable iBGP redistribution mechanism (requires ns3)</h2>
+      <a href="https://github.com/ibgp2/ibgp2" class="btn">View on GitHub</a>
+      <a href="https://github.com/ibgp2/ibgp2/zipball/master" class="btn">Download .zip</a>
+      <a href="https://github.com/ibgp2/ibgp2/tarball/master" class="btn">Download .tar.gz</a>
+    </section>
+
+    <section class="main-content">
+      <h1>
+<a id="welcome-to-ibgp2-repository" class="anchor" href="#welcome-to-ibgp2-repository" aria-hidden="true"><span class="octicon octicon-link"></span></a>Welcome to iBGP2 repository</h1>
+
+<p>This site provides the sources used in the article "iBGP2: a scalable iBGP2 redistribution mechanism leading to optimal routing" (Marc-Olivier Buob, Anthony Lambert, Steve Uhlig, INFOCOM'2016).</p>
+
+<p>iBGP2 was imagined during at the end of my thesis at Orange Labs (2005-2008), and implemented and published in 2015.</p>
+
+<h2>
+<a id="key-idea" class="anchor" href="#key-idea" aria-hidden="true"><span class="octicon octicon-link"></span></a>Key idea</h2>
+
+<p>iBGP2 daemon adapts the way a BGP router redistributes its BGP routes to its iBGP neighbors according to the IGP topology: a router <code>u</code> should redistribute to a router <code>v</code> the BGP routes related to a next-hop <code>n</code> iif <code>u</code> belongs to the shortest path from <code>v</code> to <code>u</code> (iBGP2 route redistribution rule). By doing so, each BGP router is able to learn its best possible egress point for any BGP prefix. Once BGP has converged, the routing is stable, optimal, and loop-free, since the network behaves as if it was using an iBGP full mesh.</p>
+
+<h2>
+<a id="implementation" class="anchor" href="#implementation" aria-hidden="true"><span class="octicon octicon-link"></span></a>Implementation</h2>
+
+<h3>
+<a id="overview" class="anchor" href="#overview" aria-hidden="true"><span class="octicon octicon-link"></span></a>Overview</h3>
+
+<p>The current implementation is based on ns3 and ns3-dce, which allows to run Quagga on ns-3 nodes. These simulations allows to compare how the network behaves using an iBGP full mesh, route reflection (RR), or iBGP2. To do so, the user defines the IGP topology of the simulated AS. It also defines the iBGP topology if route reflection is used. An additional router, named nh, inject some eBGP routes inside the AS to a given subset of the border routers (ASBR) according to user's settings. We assume in this implementation that every routers of the simulated AS are both IGP and BGP routers.</p>
+
+<h3>
+<a id="ibgp2" class="anchor" href="#ibgp2" aria-hidden="true"><span class="octicon octicon-link"></span></a>iBGP2</h3>
+
+<p>Each router of the AS runs iBGP2. This daemon discovers the IGP topology by sniffing IGP packet. It establishes a RR-to-RR-client iBGP session toward each IGP neighbors of the router. Hence, BGP route can be redistributed to each of the IGP/iBGP2 neighbor without limitation (contrary to RR hierarchy). iBGP route redistribution is limited by installing BGP filters on these iBGP session. We can thus exactly mimic the iBGP2 route redistribution. To do so, iBGP2 establish a telnet session to Quagga and configures dynamically BGP filters.</p>
+
+<p>The current implementation only works over IPv4 network using OSPF. It could be easily extended to support IPv6 networks. The sniffer could be extended to support other link-state IGP protocol such as IS-IS. Note also that the current implementation does not support OSPF areas.</p>
+
+<h3>
+<a id="input-files" class="anchor" href="#input-files" aria-hidden="true"><span class="octicon octicon-link"></span></a>Input files:</h3>
+
+<p>Examples could be found in datasets/article.</p>
+
+<p>The simulator uses the following input files.</p>
+
+<ul>
+<li>
+<em>igp.csv:</em> each line correspond to an IGP link. It is made of two router names and an unsigned integer corresponding to the OSPF weight set up from the first router to the second router. A OSPF network is built for each IGP link. Note that |u,v| and |v,u| metrics may differ (asymetric link).</li>
+<li>
+<em>asbr.csv:</em> each line contains a router name which acts as an ASBR. It means that an eBGP session will be configured between the external router <code>nh</code> and this router.</li>
+<li>
+<em>ibgp.csv:</em> each line defines an iBGP session (UP: client-to-RR session, OVER: standard iBGP session, DOWN: RR-to-client-session). Note that in terms of BGP configuration file, UP &lt;=&gt; OVER.</li>
+<li>
+<em>prefix.csv:</em> each line contains an ASBR name (see asbr.csv) and a prefix learned by this ASBR via its eBGP neighbor <code>nh</code>.</li>
+</ul>
+
+<p>The simulation time must be enough long to guarantee that BGP has converged.</p>
+
+<h2>
+<a id="faq" class="anchor" href="#faq" aria-hidden="true"><span class="octicon octicon-link"></span></a>FAQ</h2>
+
+<h3>
+<a id="what-do-you-call-fake-links-" class="anchor" href="#what-do-you-call-fake-links-" aria-hidden="true"><span class="octicon octicon-link"></span></a>What do you call "fake links" ?</h3>
+
+<p>In dce/source/ns-3-dce/myscripts/ns-3-dce-quagga/example/dce-ibgpv2-simu.cc in RR mode, we build some fake links. </p>
+
+<p>When a router <code>u</code> establishes a session toward a given IP of a router <code>v</code>, <code>v</code> might use another interface to contact <code>u</code>. In this situation, the session (u, v) is not rejected by quagga because the interfaces mismatch. We could define a loopback interface on each router (reannounced in OSPF) and only use loopback interfaces to setup iBGP session. Unfortunately, I was unable to make it work.</p>
+
+<p>That is why I used a (crappy) word around: I define a fake link between u and v. The corresponding route can be used to establish a direct session between u and v. OSPF is configured to not reannounce this link. Hence the OSPF topology is not impacted by this trick.</p>
+
+<p>However, if somebody is able to define proper loopbacks, it would significantly simplify dce-ibgpv2-simu.cc.</p>
+
+<h3>
+<a id="why-did-you-used-so-small-topology" class="anchor" href="#why-did-you-used-so-small-topology" aria-hidden="true"><span class="octicon octicon-link"></span></a>Why did you used so small topology?</h3>
+
+<p>Mainly because the simulation time is already quite long. In the paper I evaluate how the network behaves when route equally good in terms of local-pref, as-path, med for every possible subset of ASBR. Unfortunately to evaluate CPU usage, I cannot group all these simulation in a single run, I can only group in a single run the subset of same size. This is why you can see in datasets/article/prefix.all several csv file. Each prefix<code>N</code>.csv lists all the subsets of size <code>N</code>.</p>
+
+<h3>
+<a id="why-bgpdconf-remains-empty-at-the-end-of-the-ibgp2-runs" class="anchor" href="#why-bgpdconf-remains-empty-at-the-end-of-the-ibgp2-runs" aria-hidden="true"><span class="octicon octicon-link"></span></a>Why bgpd.conf remains empty at the end of the iBGP2 runs?</h3>
+
+<p>Unfortunately, ns3-dce does not yet provide the functions to write the resulting configuration file on the file system, and that is why the bgpd configuration file will remain quite empty at the end of the simulation.</p>
+
+<h3>
+<a id="what-about-igp-areas" class="anchor" href="#what-about-igp-areas" aria-hidden="true"><span class="octicon octicon-link"></span></a>What about IGP areas?</h3>
+
+<p>Basically, when areas are used, a packet should never transit more than once in a given area. Thus, guaranteeing that the routing is loop-free in each area is sufficient to prove that the overall routing is loop-free. Consider a given area. To make iBGP2 works in this context, iBGP2 simply has to consider that inter-area router (ABR or L1-L2 routers) as we considered ASBR so far. Each area could be seen as a single AS where next-hops are inter-area router + all the BGP next-hops connected to this area. Each of them use a local optimal BGP routing.</p>
+
+<h2>
+<a id="some-unrelated-contributions" class="anchor" href="#some-unrelated-contributions" aria-hidden="true"><span class="octicon octicon-link"></span></a>Some (unrelated) contributions</h2>
+
+<h3>
+<a id="tcpdump" class="anchor" href="#tcpdump" aria-hidden="true"><span class="octicon octicon-link"></span></a>tcpdump</h3>
+
+<p>This repository provides a wrapper for tcpdump. This is the opportunity for developers to print handled packet in a humain readable fashion.</p>
+
+<p>See usage in dce/source/ns-3-dce/myscripts/ns-3-dce-quagga/model/ibgp2d/ibgp2d.cc (Ibgp2d::HandlePacket)</p>
+
+<h3>
+<a id="telnet" class="anchor" href="#telnet" aria-hidden="true"><span class="octicon octicon-link"></span></a>telnet</h3>
+
+<p>Telnet wrapper can be used to configure or query quagga daemons.</p>
+
+<p>See usage in dce/source/ns-3-dce/myscripts/ns-3-dce-quagga/model/ibgp2d/ibgp2d.cc (Ibgp2d::UpdateIbgpFilters)</p>
+
+<h2>
+<a id="installation-steps" class="anchor" href="#installation-steps" aria-hidden="true"><span class="octicon octicon-link"></span></a>Installation steps</h2>
+
+<p>See doc/ns3_ibgp2_installation_steps.txt</p>
+
+<h2>
+<a id="related-documents" class="anchor" href="#related-documents" aria-hidden="true"><span class="octicon octicon-link"></span></a>Related documents</h2>
+
+<p>Article: (soon released)
+Thesis (in french): <a href="http://marcolivier.buob.pagesperso-orange.fr/pdf/thesis.pdf">thesis, ch4</a> <a href="http://marcolivier.buob.pagesperso-orange.fr/pdf/thesis_slides.pdf">slides, s30-37</a>
+Patents: <a href="https://www.google.com.ar/patents/WO2010010265A3?cl=en">english</a> <a href="http://google.com/patents/WO2010010265A2?cl=ja">french</a></p>
+
+      <footer class="site-footer">
+        <span class="site-footer-owner"><a href="https://github.com/ibgp2/ibgp2">iBGP2</a> is maintained by <a href="https://github.com/ibgp2">ibgp2</a>.</span>
+
+        <span class="site-footer-credits">This page was generated by <a href="https://pages.github.com">GitHub Pages</a> using the <a href="https://github.com/jasonlong/cayman-theme">Cayman theme</a> by <a href="https://twitter.com/jasonlong">Jason Long</a>.</span>
+      </footer>
+
+    </section>
+
+  
+  </body>
+</html>
