@@ -121,7 +121,8 @@ void QuaggaHelper::EnableBgp (NodeContainer nodes) {
         Ptr<BgpConfig> bgpConf = QuaggaHelper::GetConfig<BgpConfig> (node);
 
         // Set default parameters
-        bgpConf->SetStartTime (Seconds (5.0 + 0.3 * node->GetId ()));
+        //bgpConf->SetStartTime (Seconds (5.0 + 0.3 * node->GetId ()));
+        bgpConf->SetStartTime (Seconds (0.3 * node->GetId () + 30));
         bgpConf->SetAsn (node->GetId());
         bgpConf->SetRouterId (GetDefaultRouterId (node));
     }

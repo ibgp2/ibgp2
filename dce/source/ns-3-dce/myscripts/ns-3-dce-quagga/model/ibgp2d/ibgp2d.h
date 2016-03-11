@@ -49,11 +49,11 @@ namespace ns3 {
  * any IGP link state such as IS-IS and IPv6.
  *
  * The daemon sniffes OSPF packets, and reconfigure consequently BGP daemon in
- * order to mimic the iBGPv2 diffusion rule:
+ * order to mimic the iBGP2 diffusion rule:
  *
  * "A BGP route issued by a nexthop (eventually an ASBR nexthop self) n
  * is redistributed by the router u to a neighboring router v (in the
- * OSPF/iBGPv2 graph) graph if and only if the successor of v in the
+ * OSPF/iBGP2 graph) graph if and only if the successor of v in the
  * shortest path from v to n is u."
  *
  *       spf(v -> n)[1] == u
@@ -116,11 +116,13 @@ private:
     MapFilters              m_mapFilters;        /**< BGP filters that will be installed by iBGP2. */
     MapFilters              m_mapFiltersPrev;    /**< Filters previously installed, needed to make a diff. */
 
-    // iBGPv2 manages an access-list per IGP/iBGPv2 neighbor, identified by an
+    // iBGP2 manages an access-list per IGP/iBGP2 neighbor, identified by an
     // integer. This mapping and the last used identifier are stored.
 
     MapFilterId             m_mapFilterId;      /**< Mapping neighbor / access-list identifier. */
     FilterId                m_lastFilterId;     /**< Last used access-list identifier. */
+
+    bool                    m_bgpdWasRunning;
 
     //-----------------------------------------------------------------
     // Application methods
@@ -150,7 +152,7 @@ private:
      *   This id is use to identify the corresponding route-map and the
      *   corresponding filter.
      * @param rid_v The OSPF router-id of a neighbor of the router embedding
-     *   this iBGPv2d instance.
+     *   this iBGP2d instance.
      * @returns The corresponding FilterId (>1), 0 otherwise.
      */
 
@@ -160,45 +162,49 @@ private:
      * @brief Assign a new filter identifier to a neighbor.This id is use
      *   to identify the corresponding route-map and the corresponding filter
      * @param rid_v The OSPF router-id of a neighbor of the router embedding
-     *   this iBGPv2d instance.
+     *   this iBGP2d instance.
      * @return The filter identifier assigned to this neighbor.
      */
 
     const Ibgp2d::FilterId & AssignFilterId(const rid_t & rid_v);
 
     /**
-     * @brief Clear filters stored in this->filters
+     * @brief Compute for each neighbor v which external IGP networks contains
+     *    (potential) BGP nexthop(s) n that must be announced to v. Indeed
+     *    we assume in this implementation that BGP nexthop are always in such
+     *    a network.
+     * @returns A map which associates neighbors' router-id with the
+     *    corresponding external IGP networks.
      */
 
-    void ClearFilters();
+    void UpdateIbgp2Redistribution();
 
     /**
-     * @brief Update filters installed on each iBGPv2 session accordingly the
-     *   iBGPv2 diffusion criteratin.
-     *
+     * @brief Update filters installed on each iBGP2 session accordingly the
+     *   iBGP2 diffusion criterion.
      */
 
-    bool UpdateIbgpFilters ();
+    bool UpdateBgpConfiguration ();
 
     /**
      * @brief Perform a "clear ip bgp ... soft" over a set of neighbors.
-     * @param neighborsAltered The set of iBGPv2 neighbors that must be
+     * @param neighborsAltered The set of iBGP2 neighbors that must be
      *   refreshed.
      */
 
-    void RefreshIbgpv2Neighbors(std::set<Ipv4Address> & neighborsAltered);
+    void RefreshIbgp2Neighbors(std::set<Ipv4Address> & neighborsAltered);
 
     /**
      * @brief Write in an output stream the quagga commands that must be issued
      *   in bgpd (in "configure terminal mode") to update the iBGP routing policy
-     *   in order to mimic the iBGPv2 diffusion criterion.
+     *   in order to mimic the iBGP2 diffusion criterion.
      * @param os The output stream.
      * @param alteredNeighbors The set of IpAddress (used in the configuration
-     *   file) corresponding to the iBGPv2 peers altered.
+     *   file) corresponding to the iBGP2 peers altered.
      * @return alteredNeighbors.size()
      */
 
-    size_t WriteIbgpFilters(std::ostream & os, std::set<Ipv4Address> & alteredNeighbors);
+    size_t WriteIbgp2Filters(std::ostream & os, std::set<Ipv4Address> & alteredNeighbors);
 
     /**
      * @brief Build a route-map identifier.
@@ -228,11 +234,11 @@ public:
 
     /**
      * @brief Constructor.
-     * WARNING: some attributes of this iBGPv2d instance must be initialized.
+     * WARNING: some attributes of this iBGP2d instance must be initialized.
      * @sa SetConnectionBgpd
      * @sa SetConnectionOspfd
      * @sa SetAsn
-     * @sa SetRouterId (if not done, iBGPv2d connect to Ospfd
+     * @sa SetRouterId (if not done, iBGP2d connect to Ospfd
      *   to retrieve this information).
      */
 
@@ -245,7 +251,7 @@ public:
     virtual ~Ibgp2d ();
 
     /**
-     * @brief Set the ASN assigned to the Node embedding this iBGPv2d
+     * @brief Set the ASN assigned to the Node embedding this iBGP2d
      *   instance..
      * @param asn The AS number corresponding to this router.
      */
@@ -253,7 +259,7 @@ public:
     void SetAsn(uint32_t asn);
 
     /**
-     * @brief Retrieve the ASN configured for this iBGPv2d instance.
+     * @brief Retrieve the ASN configured for this iBGP2d instance.
      * @returns The corresponding ASN
      */
 
@@ -268,7 +274,7 @@ public:
     void SetRouterId(const rid_t & routerId);
 
     /**
-     * @brief Retrieve the router-id configured for this iBGPv2d instance.
+     * @brief Retrieve the router-id configured for this iBGP2d instance.
      * @returns The corresponding router-id;
      */
 
@@ -282,13 +288,13 @@ public:
     const OspfGraphHelper * GetOspfGraphHelper() const;
 
     /**
-     * @brief Authenticate iBGPv2d to BGPd.
+     * @brief Authenticate iBGP2d to BGPd.
      */
 
     void BgpdConnect();
 
     /**
-     * @brief Disconnect iBGPv2 from BGPd.
+     * @brief Disconnect iBGP2 from BGPd.
      */
 
     void BgpdDisconnect();
@@ -303,16 +309,16 @@ public:
 
     /**
      * @brief Write in an output stream the quagga commands to configure
-     *   an iBGPv2 peer.
+     *   an iBGP2 peer.
      * @param os The output stream.
      * @param rid_v The router-id of the neighboring router v.
      * @param nexthopPrefixesEnabled The prefixes containing the nexthops n
-     *   such as (n, u, v) now/still satisfies the iBGPv2 criterion.
+     *   such as (n, u, v) now/still satisfies the iBGP2 criterion.
      * @param nexthopPrefixesDisabled The prefixes containing the nexthops n
-     *   such as (n, u, v) does not satisfy the iBGPv2 criterion anymore.
+     *   such as (n, u, v) does not satisfy the iBGP2 criterion anymore.
      */
 
-    void BgpWriteIbgv2Peer(
+    void BgpWriteIbgp2Peer(
         std::ostream & os,
         const rid_t & rid_v,
         const std::set<Ipv4Prefix> & nexthopPrefixesEnabled,

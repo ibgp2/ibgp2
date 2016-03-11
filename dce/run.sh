@@ -18,13 +18,21 @@
 
 routesInterval=5
 
+# The start date of bgpd.
+# You should choose a value enough large to guarantee that the IGP has
+# converges before starting bgpd daaemons. Otherwise some artifacts may occurs.
+# For instance a BGP router may select temporarily a suboptimal egress point
+# thinking this is the optimal one in terms of IGP cost. The router will detects
+# its mistake only after having perform a rescan of its FIB (every 60s). As a
+# sequel, some BGPd routers may converge significantly slower only.
+
+bgpdStartTime=30
+
 # The date (in seconds) to stop the simulation.
-# You should choose a value >= 20s, because BGPd won't start immediately.
 # If you observe setsockopt error in the BGPd's and OSPFd's log, this is
 # probably because stopTime is too small.
 
 stopTime=75
-#stopTime=25
 
 # The input dataset: test|article
 
@@ -125,9 +133,11 @@ run_ns3() {
     mode="$3"
     debug="$4"
     routesInterval="$5"
-    stopTime="$6"
+    bgpdStartTime="$6"
+    stopTime="$7"
 
-	# Parse mode
+	# iBGP mode
+
 	case "$mode" in
 		fm)
 			mode_option="--ibgpMode=0"
@@ -144,7 +154,7 @@ run_ns3() {
 	# You can add export NS_LOG="MyObject" before running ./waf to turn on NS_LOG
     #export NS_LOG="Ibgp2d"
 
-	waf_cmd="dce-ibgpv2-simu --igp=$input_igp --ebgp=$input_ebgp $mode_option $debug --routesInterval=$routesInterval --stopTime=$stopTime"
+	waf_cmd="dce-ibgpv2-simu --igp=$input_igp --ebgp=$input_ebgp $mode_option $debug --routesInterval=$routesInterval --bgpdStartTime=$bgpdStartTime --stopTime=$stopTime"
 	#waf_cmd="dce-rr-simu --igp=$input_igp --ebgp=$input_ebgp $mode_option $debug --routesInterval=$routesInterval --stopTime=$stopTime"
 	echo "$date Running ./waf --run=\"$waf_cmd\" in [$NS3_DCE_DIR]"
 	pushd "$NS3_DCE_DIR" 1>/dev/null
@@ -246,12 +256,13 @@ for mode in $modes ; do
     # For each set of input prefixes
     for input_ebgp in $(ls -1 $inputs_ebgp) ; do
         print_sep
-        echo "input_igp=$input_igp"
-        echo "input_ebgp=$input_ebgp"
-        echo "mode=$mode"
-        echo "debug=$debug"
-        echo "routesInterval=$routesInterval"
-        echo "stopTime=$stopTime"
+        echo "input_igp      = $input_igp"
+        echo "input_ebgp     = $input_ebgp"
+        echo "mode           = $mode"
+        echo "debug          = $debug"
+        echo "routesInterval = $routesInterval"
+        echo "bgpdStartTime  = $bgpdStartTime"
+        echo "stopTime       = $stopTime"
         print_sep
         result_dir="$mode_dir/$(basename $input_ebgp)/" #$date"
 
@@ -259,7 +270,7 @@ for mode in $modes ; do
         clean_previous_run
 
         # Call ns3
-        run_ns3 "$input_igp" "$input_ebgp" "$mode" "$debug" "$routesInterval" "$stopTime"
+        run_ns3 "$input_igp" "$input_ebgp" "$mode" "$debug" "$routesInterval" "$bgpdStartTime" "$stopTime"
         ret=$?
         if [ "$ret" -ne 0 ] ; then
             echo "run_ns3 returned $ret" >&2

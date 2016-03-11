@@ -77,17 +77,34 @@ Ptr<Application> Ibgp2dHelper::InstallPriv (Ptr<Node> node) {
     Ipv4Address routerId = ospfConfig->GetRouterId();
 
     if (routerId == Ipv4Address ( OSPF_DUMMY_ROUTER_ID )) {
+        // Setting unspecified OSPF router-id.
         Ptr<Ipv4> ipv4 = node->GetObject<Ipv4>();
         uint32_t numInterfaces = ipv4->GetNInterfaces();
         routerId = ipv4->GetAddress ( 1, 0 ).GetLocal();
         NS_ASSERT ( routerId != Ipv4Address ( OSPF_DUMMY_ROUTER_ID ) );
         NS_ASSERT ( routerId != Ipv4Address ( "127.0.0.1" ) );
-        NS_LOG_INFO ( "Setting OSPF router ID on node " << node << " to " << routerId );
         ospfConfig->SetRouterId(routerId);
+        NS_LOG_INFO ( "[IBGP2] " << node << "'s router ID set to " << routerId );
     } else {
-        NS_LOG_INFO ( "The OSPF router-ID of " << node << " is already set to " << routerId );
+        NS_LOG_INFO ( "[IBGP2] " << node << "'s router ID already set to " << routerId );
     }
     ibgp2d->SetRouterId ( routerId );
+
+    // Start time : iBGP2 must start just after ospfd to rebuild the IGP graph,
+    // because once OSPF has converged, the OSPF LSA do not contains enough
+    // information to rebuild the IGP graph. Since bgpd is not necessarily
+    // (yet) running, ibgp2 may have to wait before altering iBGP filters.
+
+    Time ospfdStartTime  = ospfConfig->GetStartTime();
+    Time ibgp2StartTime = ospfdStartTime + Seconds(0.5);
+
+    /*
+    std::cout << "[IBGP2] " << routerId << ": ospfd starts at "
+        << ospfdStartTime.GetSeconds() << ", so ibgp2d will start at "
+        << ibgp2StartTime.GetSeconds() << std::endl;
+    */
+
+    ibgp2d->SetStartTime(ibgp2StartTime);
 
     // Map application
     this->mapNodeApplication[node] = node->AddApplication (ibgp2d);

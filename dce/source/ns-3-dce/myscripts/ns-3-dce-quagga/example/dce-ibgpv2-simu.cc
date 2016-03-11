@@ -21,6 +21,7 @@
  */
 
 // Default argv values.
+#define DEFAULT_BGPD_START_TIME 5.0         // Starting date of bgpd daemons.
 #define DEFAULT_STOP_TIME      20.0         // Stopping time of the experiment (in s.)
 #define DEFAULT_ROUTE_INTERVAL 0.0          // Default interval to dump routes. 0 means that print is disabled.
 
@@ -1142,6 +1143,7 @@ void DumpIfConfig (
 // Main program
 //-----------------------------------------------------------------------------
 
+#define HELP_BGPD_START_TIME  "Time before starting bgpd daemons"
 #define HELP_STOP_TIME       "Time to stop (in seconds)"
 #define HELP_VERBOSE         "Set verbose mode"
 #define HELP_DEBUG           "Set debug mode"
@@ -1161,6 +1163,7 @@ typedef enum {
 
 int main ( int argc, char *argv[] ) {
     // Parameters
+    double   bgpdStartTime = DEFAULT_BGPD_START_TIME;
     double   stopTime      = DEFAULT_STOP_TIME;
     bool     verbose       = false;
     bool     debug         = false;
@@ -1170,6 +1173,7 @@ int main ( int argc, char *argv[] ) {
     std::string filenameIbgp, filenameIgp, filenameEbgp;
 
     CommandLine cmd;
+    cmd.AddValue ( "bgpdStartTime",  HELP_BGPD_START_TIME,  bgpdStartTime );
     cmd.AddValue ( "stopTime",       HELP_STOP_TIME,       stopTime );
     cmd.AddValue ( "verbose",        HELP_VERBOSE,         verbose );
     cmd.AddValue ( "debug",          HELP_DEBUG,           debug );
@@ -1280,6 +1284,15 @@ int main ( int argc, char *argv[] ) {
         Ipv4AddressHelper ipv4AddressHelper = MakeIpv4AddressHelper ( as1as2Prefix );
         ParseEbgpFile ( ifsEbgp, ptp, mapLinkIps, ipv4AddressHelper );
         ifsEbgp.close();
+    }
+
+    // Configure BGPd starting date for each node
+    for ( NodeContainer::Iterator it = nodes1.Begin(); it != nodes1.End(); ++it ) {
+        Ptr<Node> node = *it;
+        Ptr<BgpConfig> bgpConf = node->GetObject<BgpConfig>();
+        bgpConf->SetStartTime (Seconds (0.3 * node->GetId () + bgpdStartTime));
+        std::cout << Names::FindName ( node ) << "'s bgpd will start at t = "
+            << bgpConf->GetStartTime().GetSeconds() << std::endl;
     }
 
     // Configure iBGP settings on the routers

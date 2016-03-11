@@ -55,6 +55,7 @@
 
 // DEBUG
 // #include "../pcap-wrapper.h"                // PacketWritePcap
+// #include "../tcpdump-wrapper.h"             // tcpdump
 
 NS_LOG_COMPONENT_DEFINE ("Ibgp2d");
 
@@ -93,7 +94,9 @@ static uint8_t * PacketGetBuffer (Ptr<const Packet> p) {
 Ibgp2d::Ibgp2d() :
     m_routerId (DUMMY_ROUTER_ID),
     m_telnetBgp (0),
-    m_lastFilterId (0) {
+    m_lastFilterId (0),
+    m_bgpdWasRunning (false)
+{
     NS_LOG_FUNCTION (this);
     this->m_ospfGraphHelper = CreateObject<OspfGraphHelper>();
 }
@@ -201,9 +204,11 @@ void Ibgp2d::HandlePacket (Ptr<const Packet> p) {
             std::string filename = MakePcapFilename();
             std::ofstream ofs(filename);
             if (ofs) {
-                std::cout << Ipv4Address(routerId) << ": Writting " << filename << std::endl;
+                std::cout << Ipv4Address(this->GetRouterId())
+                          << ": Writting " << filename << std::endl;
                 PacketWritePcap(ofs, Simulator::Now(), p, PcapHelper::DLT_PPP);
                 ofs.close();
+                tcpdump(std::cout, p);
             }
         }
         */
@@ -211,45 +216,87 @@ void Ibgp2d::HandlePacket (Ptr<const Packet> p) {
         std::vector<OspfLsa *> lsas;
         ExtractOspfLsa (buffer, lsas);
 
-        if (lsas.empty ()) {
-            NS_LOG_LOGIC ("OSPF packet discarded (no relevant LSA)");
-            return;
+        // Determine whether the IGP topology has changed.
+        bool hasChanged = false;
+        if (!lsas.empty ()) {
+            this->m_ospfGraphHelper->SetRouterId (this->GetRouterId());
+            hasChanged = this->m_ospfGraphHelper->HandleLsa (lsas);
+            for (auto & lsa : lsas) delete lsa;
         }
-
-        this->m_ospfGraphHelper->SetRouterId (this->GetRouterId());
-        bool hasChanged = this->m_ospfGraphHelper->HandleLsa (lsas);
-
-        for (auto & lsa : lsas) delete lsa;
-
-        if (hasChanged) {
-            this->UpdateIbgpFilters();
-        }
-
         free (buffer);
+
+        // Recompute iBGP2 redistribution.
+        if (hasChanged) {
+            UpdateIbgp2Redistribution();
+        }
+
+        // Push (if possible) iBGP2d filters in bgpd.
+
+        // TODO:
+        // We must check whether bgpd is running. This should be checked by
+        // testing whether the telnet bgpd client embedded in iBGP2d connects
+        // successfully to bgpd. For sake of simplicity, we simply tests here
+        // if bgpd has already started.
+
+        Ptr<BgpConfig> bgpConfig = this->GetNode()->GetObject<BgpConfig>();
+        NS_ASSERT(bgpConfig);
+        Time bgpdStartTime = bgpConfig->GetStartTime();
+        bool bgpdIsRunning = ( bgpdStartTime < Simulator::Now() );
+
+        if (bgpdIsRunning) {
+            // Update filters
+            if (hasChanged) {
+                NS_LOG_DEBUG("[IBGP2]: " << this->GetRouterId() << ": IGP topology has changed");
+                this->UpdateBgpConfiguration();
+            } else if (!this->m_bgpdWasRunning) {
+                NS_LOG_DEBUG("[IBGP2]: " << this->GetRouterId() << ": bgpd starts");
+                this->UpdateBgpConfiguration();
+            }
+        } else if (!bgpdIsRunning) {
+            /*
+            NS_LOG_DEBUG(
+                "[IBGP2]: " << this->GetRouterId()
+                      << ": bgpd is not yet running: bgpdStartTime = "
+                      << bgpdStartTime.GetSeconds() << " > t = "
+                      << Simulator::Now().GetSeconds()
+            );
+            */
+        }
+
+        // Update bgpdWasRunning flag.
+        this->m_bgpdWasRunning = bgpdIsRunning;
     }
 }
 
-void Ibgp2d::ClearFilters() {
-    NS_LOG_FUNCTION (this);
-
-    for (auto & x : this->m_mapFilters) x.second.clear ();
-}
-
-bool Ibgp2d::UpdateIbgpFilters() {
+bool Ibgp2d::UpdateBgpConfiguration() {
     NS_LOG_FUNCTION (this);
     std::ostringstream oss;
     std::set<Ipv4Address> neighborsAltered;
 
+    // Craft the string of command that will be transmitted to bgpd.
     oss << "#-------------------------BEGIN------------------- t = "
         << Simulator::Now().GetSeconds() << std::endl;
-    size_t numNeighborsAltered = this->WriteIbgpFilters (oss, neighborsAltered);
+    size_t numNeighborsAltered = this->WriteIbgp2Filters (oss, neighborsAltered);
     oss << "#--------------------------END--------------------" << std::endl;
 
+    NS_LOG_DEBUG(numNeighborsAltered << " altered neighbors:" << std::endl << oss.str());
+
     if (numNeighborsAltered) {
-        std::cout << "t = " << Simulator::Now().GetSeconds() << ": scheduling" << std::endl;
-        // Wait 1s in order to let the FIB being updated.
-        Simulator::ScheduleWithContext (Simulator::GetContext(), Seconds (1), &Ibgp2d::RefreshIbgpv2Neighbors, this, neighborsAltered);
-        // Note; initially I was calling immediately: this->RefreshIbgpv2Neighbors(neighborsAltered);
+        // Note; previously I was directly calling:
+        // this->RefreshIbgp2Neighbors(neighborsAltered);
+
+        // Wait 1s in order to let the FIB being updated. This avoid to
+        // forward the current best route which sometimes, is no more the
+        // optimal one once the IGP packet is processed.
+
+        Simulator::ScheduleWithContext (
+            Simulator::GetContext(),
+            Seconds (1),
+            &Ibgp2d::RefreshIbgp2Neighbors,
+            this,
+            neighborsAltered
+        );
+
     } else {
         oss.flush();
         oss << "write terminal" << std::endl;
@@ -260,7 +307,7 @@ bool Ibgp2d::UpdateIbgpFilters() {
     return (numNeighborsAltered > 0);
 }
 
-void Ibgp2d::RefreshIbgpv2Neighbors (std::set< Ipv4Address > & neighborsAltered) {
+void Ibgp2d::RefreshIbgp2Neighbors (std::set< Ipv4Address > & neighborsAltered) {
     NS_LOG_FUNCTION (this);
     std::cout << "t = " << Simulator::Now().GetSeconds()
               << ": Node [" << this->GetRouterId()
@@ -293,23 +340,22 @@ void Ibgp2d::RefreshIbgpv2Neighbors (std::set< Ipv4Address > & neighborsAltered)
     this->m_telnetBgp->AppendCommand (oss.str());
 }
 
-size_t Ibgp2d::WriteIbgpFilters (
-    std::ostream & os,
-    std::set<Ipv4Address> & alteredNeighbors
-) {
+
+//////////DEBUG
+template <typename T>
+std::ostream & operator << (std::ostream & os, const std::set<T> & s) {
+    os << '{';
+    for (auto & x : s) os << ' ' << x;
+    os << " }";
+    return os;
+}
+//////////DEBUG
+
+void Ibgp2d::UpdateIbgp2Redistribution() {
     NS_LOG_FUNCTION (this);
-    bool configurationHasChanged = false;
 
-    // We denote by u this router and v each of its iBGPv2/OSPF neighbor
+    // We denote by u this router and v each of its iBGP2/IGP neighbor
     const ospf::router_id_t & rid_u = this->GetRouterId();
-
-    /*
-    if ( rid_u == rid_t ( DUMMY_ROUTER_ID ) ) {
-        // The router-id of this router is not yet initialized, abort.
-        this->QueryRouterId ();
-        return 0;
-    }
-    */
     NS_ASSERT (rid_u != DUMMY_ROUTER_ID);
 
     const ospf::OspfGraph & gospf = this->m_ospfGraphHelper->GetGraph ();
@@ -320,25 +366,28 @@ size_t Ibgp2d::WriteIbgpFilters (
         bool ok;
         boost::tie (u, ok) = this->m_ospfGraphHelper->GetVertex (rid_u);
 
-        // The router embedding this iBGPv2d instance does not yet belong to
+        // The router embedding this iBGP2d instance does not yet belong to
         // the IGP graph or the router-id of this router is not yet known.
         // We have to wait a bit more that the IGP converges...
-        if (!ok) return 0;
+        if (!ok) {
+            // Note this "error" is normal while the IGP converges the first time.
+            //NS_LOG_INFO ("[iBGP2]: " << rid_u << ": cannot find " << rid_u << " IGP graph." );
+            return;
+        }
     }
 
-    // Compute the Dijkstra's algorithm from the point of view of each IGP neighbor
+    // Compute the Dijkstra's algorithm from each IGP neighbor point of view.
     BOOST_FOREACH (const ed_t & e_uv, boost::out_edges (u, gospf)) {
         const vd_t & v = boost::target (e_uv, gospf);
 
         if (u == v) {
             // Some loops are built in the OSPF graph to store metrics toward
             // external networks. We can ignore those arc since we consider
-            // only neighbors v != u in iBGPv2.
+            // only neighbors v != u in iBGP2.
             continue;
         }
 
         const rid_t & rid_v = gospf[v].GetRouterId();
-
         const ospf::OspfGraph & ospfGraph = this->m_ospfGraphHelper->GetGraph();
         std::map<vd_t, vd_t> predecessors;
         std::map<vd_t, uint32_t> distances;
@@ -348,10 +397,10 @@ size_t Ibgp2d::WriteIbgpFilters (
             v,
             predecessor_map (boost::make_assoc_property_map (predecessors)).
             weight_map (boost::make_function_property_map<ed_t, uint32_t> (
-        [&] (const ed_t & e) -> uint32_t {
-            return ospfGraph[e].GetDistance();
-        }
-                        )).
+                [&] (const ed_t & e) -> uint32_t {
+                    return ospfGraph[e].GetDistance();
+                }
+            )).
             distance_map (boost::make_assoc_property_map (distances))
         );
 
@@ -373,10 +422,9 @@ size_t Ibgp2d::WriteIbgpFilters (
                 bool enableIbgp2_nuv = false;
 
                 // Walk along the shortest path from n to v. If we reach u just
-                // before reaching v, (n, u, v) satisfies the iBGPv2 criterion
+                // before reaching v, (n, u, v) satisfies the iBGP2 criterion
 
                 unsigned i;
-
                 for (vd_t vcur = n, i = 0; vcur != v ; vcur = predecessors[vcur], i++) {
 
                     if (vcur == predecessors[vcur]) {
@@ -384,7 +432,7 @@ size_t Ibgp2d::WriteIbgpFilters (
                         break;
                     }
 
-                    NS_ASSERT (i < boost::num_vertices (gospf));     // corrupted predecessors map ?
+                    NS_ASSERT (i < boost::num_vertices (gospf)); // corrupted predecessors map ?
 
                     if (vcur == u) {
                         enableIbgp2_nuv = true;
@@ -402,12 +450,12 @@ size_t Ibgp2d::WriteIbgpFilters (
         }
 
         // Deduces from rids_n_enabled the corresponding prefixes
-        std::set<Ipv4Prefix> enabledNexthops;
+        std::set<Ipv4Prefix> & enabledNexthops = this->m_mapFilters[rid_v];
 
         if (predecessors[u] == v) {
             // TODO We should enumerate the IP of u in the filter.
-            // For the moment we use a simpler implementation : we only accept the interfaces
-            // used by to connect to u.
+            // For the moment we use a simpler implementation : we only accept
+            // the interface of v directly connected to u.
             this->m_ospfGraphHelper->GetTransitNetworks (rid_u, rid_v, enabledNexthops);
 
             for (const rid_t & rid_n : rids_n_enabled) {
@@ -416,6 +464,27 @@ size_t Ibgp2d::WriteIbgpFilters (
             }
         }
 
+    } // for e_uv
+}
+
+size_t Ibgp2d::WriteIbgp2Filters (
+    std::ostream & os,
+    std::set<Ipv4Address> & alteredNeighbors
+) {
+    NS_LOG_FUNCTION (this);
+
+    // We denote by u this router and v each of its iBGP2/IGP neighbor
+    const ospf::router_id_t & rid_u = this->GetRouterId();
+    NS_ASSERT (rid_u != DUMMY_ROUTER_ID);
+
+    const ospf::OspfGraph & gospf = this->m_ospfGraphHelper->GetGraph ();
+
+    for (auto & p : this->m_mapFilters) {
+
+        const rid_t & rid_v = p.first;
+        const std::set<Ipv4Prefix> & enabledNexthops = p.second;
+
+        // Compute diff between the running and the new configuration.
         std::set<Ipv4Prefix> addedPrefixes;
         std::set<Ipv4Prefix> removedPrefixes;
 
@@ -423,8 +492,7 @@ size_t Ibgp2d::WriteIbgpFilters (
             MapFilters::iterator fit (this->m_mapFiltersPrev.find (rid_v));
 
             if (fit != this->m_mapFiltersPrev.end()) {
-
-                // This iBPGv2 neighbor v has some filters already installed.
+                // This iBPG2 neighbor v has some filters already installed.
                 std::set<Ipv4Prefix> & enabledPrefixesPrev = fit->second;
 
                 // Find next-hop prefixes that are now allowed.
@@ -445,20 +513,19 @@ size_t Ibgp2d::WriteIbgpFilters (
 
                 enabledPrefixesPrev.insert (addedPrefixes.begin(), addedPrefixes.end());
             } else {
-
-                // v is a new peer, so all the nexthops n such (n, u, v) satisfies the iBGPv2
+                // v is a new peer, so all the nexthops n such (n, u, v) satisfies the iBGP2
                 // createrion must be enabled.
-                this->m_mapFiltersPrev[rid_v] = addedPrefixes;
+                addedPrefixes = enabledNexthops;
+                this->m_mapFiltersPrev[rid_v] = enabledNexthops;
             }
         }
 
         if (!addedPrefixes.empty() || !removedPrefixes.empty()) {
-            configurationHasChanged = true;
             const Ipv4Address & ip_v  = this->m_ospfGraphHelper->GetInterface (rid_v, rid_u);
             alteredNeighbors.insert (ip_v);
-            this->BgpWriteIbgv2Peer (os, rid_v, addedPrefixes, removedPrefixes);
+            this->BgpWriteIbgp2Peer (os, rid_v, addedPrefixes, removedPrefixes);
         }
-    } // for v
+    } // for each neighbor
 
     return alteredNeighbors.size();
 }
@@ -467,7 +534,7 @@ void Ibgp2d::BgpdConnect() {
     NS_LOG_FUNCTION (this);
     Ptr<Node> node = this->GetNode();
 
-    // Connect iBGPv2 to BGPd (if not yet connected)
+    // Connect iBGP2 to BGPd (if not yet connected)
     if (!this->m_telnetBgp) {
 
         Ptr<BgpConfig> bgpConfig = node->GetObject<BgpConfig>();
@@ -521,7 +588,7 @@ void Ibgp2d::BgpWriteBegin (std::ostream & os) const {
     // bgpd(config-router)#
 }
 
-void Ibgp2d::BgpWriteIbgv2Peer (
+void Ibgp2d::BgpWriteIbgp2Peer (
     std::ostream & os,
     const Ipv4Address & rid_v,
     const std::set<Ipv4Prefix> & nexthopPrefixesEnabled,
@@ -536,7 +603,7 @@ void Ibgp2d::BgpWriteIbgv2Peer (
     FilterId filterId_v = this->GetFilterId (rid_v);
     bool isNewNeighbor = (filterId_v == 0);
 
-    // If v has no filter-id, then v is a new iBGPv2 peer.
+    // If v has no filter-id, then v is a new iBGP2 peer.
     if (isNewNeighbor) {
         filterId_v = this->AssignFilterId (rid_v);
     }

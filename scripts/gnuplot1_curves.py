@@ -7,7 +7,7 @@
 #   ./gnuplot1_curves.py simu_dir simulation_duration
 #
 # Example:
-#   ./gnuplot1_curves.py ~/git/ibgp2/results/article/rr/ 75
+#   ./gnuplot1_curves.py ~/git/ibgp2/results/article/rr/ 5 75
 #
 # Outputs:
 #   ./*.dat : points deduced from the zebra's outputs
@@ -954,7 +954,7 @@ set yrange [%(ymin)s:%(ymax)s]
 GNUPLOT_XY = GNUPLOT_COMMON + """
 set xtics 1
 set xtics out
-set ytics 10
+set ytics %(ytics)s
 set style data boxes
 plot "%(filename_dat)s" using 2:1 with linespoints ls 1 notitle
 """
@@ -1476,14 +1476,15 @@ def main():
     argc = len(sys.argv)
 
     if argc < 3:
-        error("""usage: %(prog)s simu_dir simulation_duration
-        Example: %(prog)s ~/git/ibgp2/results/article/rr/ 75
+        error("""usage: %(prog)s simu_dir bgp_start simulation_duration
+        Example: %(prog)s ~/git/ibgp2/results/article/rr/ 5 75
         """ % {"prog" : sys.argv[0]})
         return 1
 
     # Check output dir
     simu_dir = os.path.abspath(sys.argv[1])
-    simulation_duration_sec = int(sys.argv[2])
+    bgp_start = int(sys.argv[2])
+    simulation_duration_sec = int(sys.argv[3])
 
     stats_xyz = stats_xyz_t()
 
@@ -1493,6 +1494,7 @@ def main():
         "ylabel" : "CDF(%routers)",
         "ymin"   : 0,
         "ymax"   : "",
+        "ytics"  : 5,
         "zlabel" : "#Concurrent eBGP routes"
     })
 
@@ -1502,6 +1504,7 @@ def main():
         "ylabel" : "CDF(%routers)",
         "ymin"   : 0,
         "ymax"   : "",
+        "ytics"  : 10,
         "zlabel" : "#Concurrent eBGP routes"
     })
 
@@ -1511,6 +1514,7 @@ def main():
         "ylabel" : "CDF(%routers)",
         "ymin"   : 0,
         "ymax"   : "",
+        "ytics"  : 10,
         "zlabel" : "#Concurrent eBGP routes"
     })
 
@@ -1520,6 +1524,7 @@ def main():
         "ylabel" : "CDF(%routers)",
         "ymin"   : 0,
         "ymax"   : "",
+        "ytics"  : 10,
         "zlabel" : "#Concurrent eBGP routes"
     })
 
@@ -1529,6 +1534,7 @@ def main():
         "ylabel" : "CDF(%routers)",
         "ymin"   : 0,
         "ymax"   : "",
+        "ytics"  : 5,
         "zlabel" : "#Concurrent eBGP routes"
     })
 
@@ -1538,6 +1544,7 @@ def main():
         "ylabel" : "CDF(%routers)",
         "ymin"   : 0,
         "ymax"   : "",
+        "ytics"  : 1,
         "zlabel" : "#Concurrent eBGP routes"
     })
 
@@ -1557,7 +1564,7 @@ def main():
             # Skip the directory where we are writting files
             if os.path.isdir(run_dir) and run_dir != output_dir:
                 info("Processing %s" % run_dir)
-                bgp_simulation_duration_sec = timedelta(seconds = simulation_duration_sec - 5)
+                bgp_simulation_duration_sec = timedelta(seconds = simulation_duration_sec - bgp_start)
                 process_run(run_dir, bgp_simulation_duration_sec, stats_xyz, ofs_opt)
 
     stats_xyz.write_gnuplot_files(output_dir)

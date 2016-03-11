@@ -256,6 +256,10 @@ def main():
 
     gnuplot_dir = sys.argv[1]
     for prefix in SETTINGS.keys():
+        # DEBUG
+        if prefix != "convergence_time_sec_":
+            print("g3: DEBUG: skip")
+
         # Count number of file matches the current prefixes
         num_files = 0
         for filename in os.listdir(gnuplot_dir):

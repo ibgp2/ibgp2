@@ -5,10 +5,10 @@
 #   Marc-Olivier Buob <marcolivier.buob@orange.fr>
 #
 # Usage:
-#   ./gnuplot3_benchmark.py gnuplot_dir
+#   ./gnuplot3_benchmark.py dataset
 #
 # Example:
-#   ./gnuplot3_benchmark.py ~/git/ibgp2/results/article/
+#   ./gnuplot3_benchmark.py article
 #
 # Outputs:
 #   $gnuplot_dir/convergence_time_sec_benchmark.{gnu, eps}
@@ -82,7 +82,7 @@ SETTINGS = {
         "xtics"  : 1,
         "ylabel" : "Convergence time (in s)",
         "yrange" : "[0:]",
-        "ytics"  : 10
+        "ytics"  : 5
     },
     "diversity_"            : {
         "title"  : "BGP route diversity.",
@@ -287,7 +287,7 @@ def print_settings(ofs_gnu, settings, filenames_dat, prefix):
         if prefix != "optimality_":
             # box
             print(
-                '"%(filename_dat)s" using (%(offset)s * box_size + 1 + $0):3:(box_size) ls %(ls)s with boxes %(title)s,\\' % {
+                '"%(filename_dat)s" using (%(offset)s * box_size + $1):3:(box_size) ls %(ls)s with boxes %(title)s,\\' % {
                     "filename_dat" : filename_dat,
                     "offset"       : i + offset,
                     "ls"           : i + 1,
@@ -297,7 +297,7 @@ def print_settings(ofs_gnu, settings, filenames_dat, prefix):
             )
             # yerror
             print(
-                '"%(filename_dat)s" using (%(offset)s * box_size + 1 + $0):3:2:4 ls %(ls)s with error notitle%(eol)s' % {
+                '"%(filename_dat)s" using (%(offset)s * box_size + $1):3:2:4 ls %(ls)s with error notitle%(eol)s' % {
                     "filename_dat" : filename_dat,
                     "offset"       : i + offset,
                     "ls"           : i + 1,
@@ -367,6 +367,9 @@ def main():
     gnuplot_dir = sys.argv[1]
 
     for prefix in SETTINGS.keys():
+        # DEBUG
+        if prefix != "convergence_time_sec_":
+            print("g3: DEBUG: skip")
 
         # Find files matching the prefix
         filenames_dat = set()
